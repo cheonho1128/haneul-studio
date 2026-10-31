@@ -1,0 +1,37 @@
+const { _electron: electron } = require('playwright');
+const path = require('path');
+const F = p => path.join(__dirname, 'fixtures', p);
+(async () => {
+  const app = await electron.launch({ executablePath: require(path.join(__dirname, '..', 'node_modules', 'electron')), args: ['.', '--no-sandbox'], cwd: path.join(__dirname, '..') });
+  const win = await app.firstWindow();
+  const errors = [];
+  win.on('pageerror', e => errors.push(String(e)));
+  win.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  await win.waitForTimeout(1000);
+  await win.evaluate(async (fx) => {
+    const s = window.__studio;
+    await s.importPaths([fx.a, fx.b]);
+    document.querySelectorAll('.media-item')[0].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    const c = s.project.tracks.find(t => t.name === '메인 영상').clips[0];
+    c.color = { exposure: 30, shadows: 40, highlights: -40, temperature: 50, vibrance: 30, lut: { path: fx.lut, name: 'warm.cube' } };
+    s.seek(2);
+    s.addTextClip({ text: '검은고딕 글꼴', fontSize: 120, color: '#ffe14f', strokeColor: '#000000', strokeWidth: 10, fontFamily: 'Black Han Sans', y: 0.75 });
+  }, { a: F('a.mp4'), b: F('b_noaudio.mp4'), lut: F('warm.cube') });
+  await win.waitForTimeout(4000);
+  console.log('size', await win.evaluate(() => [window.__studio.project.width, window.__studio.project.height].join('x')));
+  console.log('font loaded', await win.evaluate(() => document.fonts.check('40px "Black Han Sans"')));
+  await win.click('.clip.video', { button: 'right' });
+  await win.waitForTimeout(400);
+  await win.screenshot({ path: path.join(__dirname, 'ui6.png') });
+  await win.keyboard.press('Escape');
+  await win.mouse.click(5, 5);
+  await win.click('.clip.video');
+  await win.click('.prop-tabs button[data-t="color"]');
+  await win.waitForTimeout(500);
+  await win.screenshot({ path: path.join(__dirname, 'ui7.png') });
+  await (await win.$('#preview')).screenshot({ path: path.join(__dirname, 'prev-color.png') });
+  const r = await win.evaluate(async (out) => { const s = window.__studio; return window.api.startExport({ project: s.project, textPngs: s.renderTextPngs(), outPath: out, crf: 23, preset: 'ultrafast' }); }, path.join(__dirname, 'ui-out.mp4'));
+  console.log('export', r.ok, r.error ? r.error.slice(-600) : '');
+  console.log('errors', errors);
+  app.process().kill('SIGKILL'); process.exit(0);
+})().catch(e => { console.error(e); process.exit(1); });

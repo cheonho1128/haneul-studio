@@ -86,5 +86,33 @@
     return plan;
   }
 
-  return { FILTERS, FILTER_PRESET_FFMPEG, EFFECTS, TRANSITIONS, TEXT_ANIMS, clipDuration, clipEnd, projectDuration, transitionPlan };
+  /* ----- 색 보정 (프리미어의 Lumetri 기본 보정과 비슷) ----- */
+  const COLOR_KEYS = ['exposure', 'highlights', 'shadows', 'whites', 'blacks', 'temperature', 'tint', 'vibrance'];
+  function hasColor(col) { return !!col && COLOR_KEYS.some(k => Number(col[k])); }
+  /** 0~1 입력값에 대한 R,G,B 출력값 */
+  function toneMap(col, x) {
+    const n = k => (Number(col[k]) || 0) / 100;
+    let v = x * Math.pow(2, n('exposure') * 1.5);
+    const bp = -n('blacks') * 0.12;               // 블랙: +면 어두운 부분을 띄움
+    v = bp + v * (1 - bp) * (1 + n('whites') * 0.25);
+    const c = Math.min(1, Math.max(0, v));
+    v += n('shadows') * 0.35 * Math.pow(1 - c, 2) * Math.min(1, c * 6 + 0.15);
+    v += n('highlights') * 0.3 * c * c * Math.min(1, (1 - c) * 6 + 0.15);
+    const t = n('temperature'), ti = n('tint');
+    const clamp = z => Math.min(1, Math.max(0, z));
+    return [clamp(v * (1 + t * 0.12 + ti * 0.04)), clamp(v * (1 - ti * 0.1)), clamp(v * (1 - t * 0.12 + ti * 0.04))];
+  }
+  function toneTables(col) {
+    const r = new Uint8ClampedArray(256), g = new Uint8ClampedArray(256), b = new Uint8ClampedArray(256);
+    for (let i = 0; i < 256; i++) { const o = toneMap(col, i / 255); r[i] = o[0] * 255; g[i] = o[1] * 255; b[i] = o[2] * 255; }
+    return [r, g, b];
+  }
+  /** ffmpeg curves 필터용 점 목록 */
+  function curvesFilter(col) {
+    const pts = [[], [], []];
+    for (let i = 0; i <= 16; i++) { const x = i / 16, o = toneMap(col, x); for (let k = 0; k < 3; k++) pts[k].push(`${x.toFixed(4)}/${o[k].toFixed(4)}`); }
+    return `curves=r='${pts[0].join(' ')}':g='${pts[1].join(' ')}':b='${pts[2].join(' ')}'`;
+  }
+
+  return { COLOR_KEYS, hasColor, toneMap, toneTables, curvesFilter, FILTERS, FILTER_PRESET_FFMPEG, EFFECTS, TRANSITIONS, TEXT_ANIMS, clipDuration, clipEnd, projectDuration, transitionPlan };
 });

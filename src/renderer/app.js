@@ -10,14 +10,18 @@ const TRACK_H = { video: 64, text: 36, audio: 52 };
 const FONTS = ['Malgun Gothic', 'Gulim', 'Dotum', 'Batang', 'Gungsuh', 'Segoe UI', 'Arial', 'Arial Black', 'Impact', 'Georgia', 'Times New Roman', 'Courier New', 'Comic Sans MS'];
 const FILTERS = Core.FILTERS;
 const TEXT_PRESETS = [
-  { name: '기본 텍스트', s: { text: '텍스트를 입력하세요', fontSize: 80, color: '#ffffff', strokeWidth: 0, bgColor: '', bold: true } },
-  { name: '자막', s: { text: '자막', fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 6, y: 0.85, bold: true } },
-  { name: '제목', s: { text: '제목', fontSize: 140, color: '#ffffff', strokeColor: '#1c4f8a', strokeWidth: 10, fontFamily: 'Arial Black', bold: true } },
-  { name: '노란 강조', s: { text: '강조!', fontSize: 110, color: '#ffe14f', strokeColor: '#000000', strokeWidth: 10, bold: true } },
-  { name: '박스 라벨', s: { text: '라벨', fontSize: 64, color: '#111111', bgColor: '#ffffff', strokeWidth: 0, bold: true } },
-  { name: '반투명 박스', s: { text: '설명 문구', fontSize: 52, color: '#ffffff', bgColor: '#000000aa', strokeWidth: 0, y: 0.82 } },
-  { name: '네온', s: { text: 'NEON', fontSize: 120, color: '#9ff3ff', strokeColor: '#00a8ff', strokeWidth: 4, shadow: 30, shadowColor: '#00c8ff', fontFamily: 'Arial Black', bold: true } },
-  { name: '손글씨 느낌', s: { text: '오늘의 기록', fontSize: 90, color: '#ffffff', fontFamily: 'Comic Sans MS', strokeWidth: 0, shadow: 10, shadowColor: '#000000' } },
+  { name: '기본 텍스트', s: { text: '텍스트를 입력하세요', fontSize: 80, color: '#ffffff', strokeWidth: 0, bgColor: '', bold: true, fontFamily: 'Noto Sans KR' } },
+  { name: '자막', s: { text: '자막', fontSize: 56, color: '#ffffff', strokeColor: '#000000', strokeWidth: 6, y: 0.85, bold: true, fontFamily: 'Noto Sans KR' } },
+  { name: '예능 자막', s: { text: '대박!!', fontSize: 120, color: '#ffe14f', strokeColor: '#000000', strokeWidth: 12, bold: false, fontFamily: 'Black Han Sans' } },
+  { name: '제목', s: { text: '제목', fontSize: 150, color: '#ffffff', strokeColor: '#1c4f8a', strokeWidth: 10, fontFamily: 'Do Hyeon' } },
+  { name: '귀여운', s: { text: '오늘의 일상', fontSize: 110, color: '#ffb3c7', strokeColor: '#ffffff', strokeWidth: 8, fontFamily: 'Jua' } },
+  { name: '손글씨', s: { text: '오늘의 기록', fontSize: 120, color: '#ffffff', fontFamily: 'Nanum Pen Script', strokeWidth: 0, shadow: 10, shadowColor: '#000000' } },
+  { name: '감성 명조', s: { text: '그날의 바다', fontSize: 90, color: '#f3ead7', fontFamily: 'Gowun Batang', strokeWidth: 0, shadow: 14, shadowColor: '#000000' } },
+  { name: '박스 라벨', s: { text: '라벨', fontSize: 64, color: '#111111', bgColor: '#ffffff', strokeWidth: 0, bold: true, fontFamily: 'Noto Sans KR' } },
+  { name: '반투명 박스', s: { text: '설명 문구', fontSize: 52, color: '#ffffff', bgColor: '#000000aa', strokeWidth: 0, y: 0.82, fontFamily: 'Gothic A1' } },
+  { name: '네온', s: { text: 'NEON', fontSize: 140, color: '#9ff3ff', strokeColor: '#00a8ff', strokeWidth: 4, shadow: 30, shadowColor: '#00c8ff', fontFamily: 'Bebas Neue' } },
+  { name: '시네마 타이틀', s: { text: 'THE JOURNEY', fontSize: 120, color: '#ffffff', fontFamily: 'Playfair Display', strokeWidth: 0, bold: true, shadow: 18, shadowColor: '#000000' } },
+  { name: '만화', s: { text: 'BOOM!', fontSize: 150, color: '#ff4f4f', strokeColor: '#ffffff', strokeWidth: 10, fontFamily: 'Bangers' } },
 ];
 
 /* ---------- 상태 ---------- */
@@ -129,6 +133,15 @@ function renderMedia() {
     el.ondragstart = e => { e.dataTransfer.setData('text/media-id', m.id); e.dataTransfer.effectAllowed = 'copy'; dragMediaKind = m.kind; };
     el.ondragend = () => { dragMediaKind = null; $$('.track').forEach(t => t.classList.remove('drop-ok')); };
     el.ondblclick = () => addMediaClip(m, null, playhead);
+    el.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      showMenu(e.clientX, e.clientY, [
+        { label: '타임라인에 추가', action: () => addMediaClip(m, null, playhead) },
+        { label: '재생헤드 위치에 겹쳐 넣기', action: () => { const tr = project.tracks.find(t => trackFits(t, m.kind) && !t.clips.some(c => playhead < clipEnd(c) && playhead + 0.1 > c.start)); addMediaClip(m, tr || null, playhead); } },
+        '-',
+        { label: '목록에서 제거', action: () => el.querySelector('.del').click() },
+      ]);
+    });
     el.querySelector('.del').onclick = e => {
       e.stopPropagation();
       const used = project.tracks.some(t => t.clips.some(c => c.mediaId === m.id));
@@ -157,7 +170,25 @@ function freeSpot(track, start, dur, ignoreId) {
   return Math.max(start, ...others.map(clipEnd));
 }
 
+function autoFitProject(m) {
+  // 첫 영상/사진을 넣으면 프로젝트 화면 비율을 그 크기에 맞춘다
+  if (m.kind === 'audio' || !m.width || !m.height) return;
+  const hasVisual = project.tracks.some(t => t.kind === 'video' && t.clips.length);
+  if (hasVisual) return;
+  const k = Math.min(1, 3840 / Math.max(m.width, m.height));
+  const w = Math.round(m.width * k / 2) * 2, h = Math.round(m.height * k / 2) * 2;
+  if (w === project.width && h === project.height) return;
+  project.width = w; project.height = h;
+  syncRatioSelect(); sizeCanvas();
+  toast(`화면 크기를 영상에 맞췄어요 (${w}×${h})`);
+}
+function syncRatioSelect() {
+  const sel = $('#selRatio'), v = `${project.width}x${project.height}`;
+  sel.value = v;
+  if (sel.value !== v) { const o = new Option(`${project.width}×${project.height} (영상에 맞춤)`, v); sel.add(o, 0); sel.value = v; }
+}
 function addMediaClip(m, track, start) {
+  autoFitProject(m);
   if (!track) {
     track = project.tracks.slice().reverse().find(t => trackFits(t, m.kind));
     if (!track) { track = { id: uid(), kind: m.kind === 'audio' ? 'audio' : 'video', name: '새 트랙', clips: [] }; project.tracks.push(track); }
@@ -178,7 +209,14 @@ function addMediaClip(m, track, start) {
   return c;
 }
 
+async function ensureProjectFonts() {
+  const fams = new Set(project.tracks.flatMap(t => t.clips.filter(c => c.type === 'text').map(c => c.fontFamily)));
+  const jobs = [...fams].filter(f => Fonts.isFree(f)).map(f => Fonts.ensure(f).catch(() => toast(`글꼴 '${f}'을 받지 못했어요`)));
+  await Promise.all(jobs);
+  requestDraw();
+}
 function addTextClip(style, start = playhead, dur = 3, track) {
+  if (style && style.fontFamily && Fonts.isFree(style.fontFamily)) Fonts.ensure(style.fontFamily).then(() => requestDraw()).catch(() => {});
   track = track || project.tracks.find(t => t.kind === 'text');
   if (!track) { track = { id: uid(), kind: 'text', name: '텍스트', clips: [] }; project.tracks.unshift(track); }
   const c = Object.assign({
@@ -231,6 +269,7 @@ function filterCss(f, c) {
     const p = FILTERS.find(x => x.id === f.preset); if (p && p.css) parts.push(p.css);
     if (f.blur) parts.push(`blur(${f.blur * 0.6 * canvasScale()}px)`);
   }
+  if (c && c.color && c.color.vibrance) parts.push(`saturate(${(1 + c.color.vibrance / 200).toFixed(3)})`);
   if (c && hasFx(c, 'invert')) parts.push('invert(1)');
   return parts.join(' ') || 'none';
 }
@@ -249,8 +288,8 @@ function fadeAlpha(c, local, dur, tp = {}) {
 
 function sizeCanvas() {
   const wrap = $('#previewWrap');
-  const maxW = wrap.clientWidth - 24, maxH = wrap.clientHeight - 24;
-  const r = Math.min(maxW / project.width, maxH / project.height, 1);
+  const maxW = wrap.clientWidth - 8, maxH = wrap.clientHeight - 8;
+  const r = Math.min(maxW / project.width, maxH / project.height);
   const dpr = window.devicePixelRatio || 1;
   const w = Math.max(16, Math.round(project.width * r)), h = Math.max(16, Math.round(project.height * r));
   canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
@@ -371,6 +410,43 @@ function tinted(src, color, idx) {
   return c;
 }
 const COMPLEX_FX = ['zoomIn', 'zoomOut', 'pixelate', 'rgbSplit', 'grain', 'vignette', 'flash'];
+const toneCache = new Map();
+function toneFor(col) {
+  const key = Core.COLOR_KEYS.map(k => col[k] || 0).join(',');
+  let t = toneCache.get(key);
+  if (!t) { t = Core.toneTables(col); toneCache.set(key, t); if (toneCache.size > 50) toneCache.delete(toneCache.keys().next().value); }
+  return t;
+}
+const lutCache = new Map();
+function parseCube(text) {
+  let size = 0; const data = []; let dmin = [0, 0, 0], dmax = [1, 1, 1];
+  for (const line of text.split(/\r?\n/)) {
+    const l = line.trim();
+    if (!l || l[0] === '#') continue;
+    if (/^LUT_3D_SIZE/i.test(l)) size = parseInt(l.split(/\s+/)[1]);
+    else if (/^DOMAIN_MIN/i.test(l)) dmin = l.split(/\s+/).slice(1).map(Number);
+    else if (/^DOMAIN_MAX/i.test(l)) dmax = l.split(/\s+/).slice(1).map(Number);
+    else if (/^[\d.\-eE+]+\s+[\d.\-eE+]+\s+[\d.\-eE+]+$/.test(l)) data.push(...l.split(/\s+/).map(Number));
+  }
+  if (!size || data.length < size * size * size * 3) throw new Error('3D LUT(.cube) 형식이 아니에요');
+  return { size, data: new Float32Array(data), dmin, dmax };
+}
+async function getLut(lut) {
+  if (!lut || !lut.path) return null;
+  if (lutCache.has(lut.path)) return lutCache.get(lut.path);
+  lutCache.set(lut.path, null);
+  try { lutCache.set(lut.path, parseCube(await API.readText(lut.path))); requestDraw(); } catch (e) { toast('LUT를 읽지 못했어요: ' + e.message); }
+  return lutCache.get(lut.path);
+}
+function applyLut(p, L) {
+  const n = L.size, d = L.data, n1 = n - 1;
+  for (let i = 0; i < p.length; i += 4) {
+    // 가장 가까운 격자점 (빠른 미리보기용)
+    const r = Math.round(p[i] / 255 * n1), g = Math.round(p[i + 1] / 255 * n1), b = Math.round(p[i + 2] / 255 * n1);
+    const k = (r + g * n + b * n * n) * 3;
+    p[i] = d[k] * 255; p[i + 1] = d[k + 1] * 255; p[i + 2] = d[k + 2] * 255;
+  }
+}
 
 /** 미디어 클립 한 장면을 그린다 */
 function drawMediaClip(src, c, m, W, H, t, local, dur, tp, alpha) {
@@ -388,7 +464,10 @@ function drawMediaClip(src, c, m, W, H, t, local, dur, tp, alpha) {
     if (tp.slide.dir === 'up') y += H * e; if (tp.slide.dir === 'down') y -= H * e;
   }
   const css = filterCss(c.filter, c);
-  const complex = (c.effects || []).some(e => COMPLEX_FX.includes(e.type)) || (c.chroma && c.chroma.on) || tp.whiteIn || tp.whiteOut;
+  const colorOn = c.color && Core.hasColor(c.color);
+  const lut = c.color && c.color.lut && c.color.lut.path ? lutCache.get(c.color.lut.path) : null;
+  if (c.color && c.color.lut && c.color.lut.path && !lutCache.has(c.color.lut.path)) getLut(c.color.lut);
+  const complex = (c.effects || []).some(e => COMPLEX_FX.includes(e.type)) || (c.chroma && c.chroma.on) || tp.whiteIn || tp.whiteOut || colorOn || lut;
   let img = src, iw = dw, ih = dh;
   if (complex) {
     const fx = fxCanvas(0, dw, dh), g = fx.getContext('2d');
@@ -404,6 +483,12 @@ function drawMediaClip(src, c, m, W, H, t, local, dur, tp, alpha) {
       tiny.getContext('2d').drawImage(fx, 0, 0, tiny.width, tiny.height);
       g.clearRect(0, 0, fx.width, fx.height); g.imageSmoothingEnabled = false;
       g.drawImage(tiny, 0, 0, fx.width, fx.height); g.imageSmoothingEnabled = true;
+    }
+    if (colorOn || lut) {
+      const d = g.getImageData(0, 0, fx.width, fx.height), p = d.data;
+      if (colorOn) { const [tr, tg, tb] = toneFor(c.color); for (let i = 0; i < p.length; i += 4) { p[i] = tr[p[i]]; p[i + 1] = tg[p[i + 1]]; p[i + 2] = tb[p[i + 2]]; } }
+      if (lut) applyLut(p, lut);
+      g.putImageData(d, 0, 0);
     }
     if (c.chroma && c.chroma.on) {
       const [kr, kg, kb] = hexRgb(c.chroma.color);
@@ -640,6 +725,19 @@ function renderTimeline() {
       e.preventDefault(); row.classList.add('drop-ok');
     };
     row.ondragleave = () => row.classList.remove('drop-ok');
+    row.addEventListener('contextmenu', e => {
+      if (e.target !== row) return;
+      e.preventDefault();
+      const t = (e.clientX - row.getBoundingClientRect().left) / pxPerSec;
+      showMenu(e.clientX, e.clientY, [
+        { label: '여기에 붙여넣기', key: 'Ctrl+V', action: () => { seek(t); paste(); }, disabled: !clipboard },
+        tr.kind === 'text' ? { label: '여기에 텍스트 추가', key: 'T', action: () => { seek(t); addTextClip({ ...TEXT_PRESETS[0].s }, t, 3, tr); } } : null,
+        { label: '재생헤드 여기로', action: () => seek(t) },
+        '-',
+        { label: '모든 클립 선택', key: 'Ctrl+A', action: () => selectWhere(() => true) },
+        { label: '이 트랙 클립 모두 선택', action: () => selectWhere((c, t2) => t2 === tr) },
+      ]);
+    });
     row.ondrop = e => {
       row.classList.remove('drop-ok');
       const m = project.media.find(x => x.id === e.dataTransfer.getData('text/media-id')); if (!m) return;
@@ -722,6 +820,7 @@ function renderClip(c, tr) {
   const hr = document.createElement('div'); hr.className = 'handle r';
   el.append(hl, hr);
   el.addEventListener('pointerdown', e => clipPointerDown(e, c, tr, el));
+  el.addEventListener('contextmenu', e => clipMenu(e, c, tr));
   return el;
 }
 
@@ -1047,7 +1146,39 @@ function addTrack(kind) {
 }
 
 /* ---------- 속성 패널 ---------- */
+const TAB_OF = {
+  '내용': 'text', '글꼴': 'text', '색상': 'text', '위치': 'text', '일괄 적용': 'text',
+  '등장 애니메이션': 'anim', '시간 · 전환': 'anim',
+  '화면': 'basic', '정지 화면': 'basic', '속도': 'basic', '소리': 'audio',
+  '필터': 'filter', '기본 보정': 'color', '라이트': 'color', '색감': 'color', 'LUT (색 프리셋 파일)': 'color',
+  '효과': 'effects', '크로마키 (배경색 지우기)': 'effects',
+  '전환 (앞 클립에서 넘어올 때)': 'trans', '전환 효과 · 시간': 'trans',
+};
+const TAB_NAMES = { text: '텍스트', basic: '기본', audio: '오디오', filter: '필터', color: '색 보정', effects: '효과', trans: '전환', anim: '애니메이션' };
+let propTab = {};
 function renderProps() {
+  renderLibraries();
+  const scroll = $('#right').scrollTop;
+  renderPropsInner();
+  const box = $('#props');
+  const groups = [...box.querySelectorAll(':scope > .prop-group')];
+  if (!groups.length) return;
+  const tabs = [...new Set(groups.map(g => g.dataset.tab))];
+  const kind = $('#propTitle').textContent;
+  let cur = propTab[kind] && tabs.includes(propTab[kind]) ? propTab[kind] : tabs[0];
+  const bar = document.createElement('nav'); bar.className = 'tabs prop-tabs';
+  const show = t => {
+    cur = t; propTab[kind] = t;
+    groups.forEach(g => g.classList.toggle('hidden', g.dataset.tab !== t));
+    bar.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.t === t));
+  };
+  tabs.forEach(t => { const b = document.createElement('button'); b.dataset.t = t; b.textContent = TAB_NAMES[t] || t; b.onclick = () => show(t); bar.appendChild(b); });
+  box.prepend(bar);
+  show(cur);
+  $('#right').scrollTop = scroll;
+}
+function openPropTab(t) { const kind = $('#propTitle').textContent; propTab[kind] = t; renderProps(); }
+function renderPropsInner() {
   const box = $('#props'); box.innerHTML = '';
   if (selectedIds.size > 1) {
     $('#propTitle').textContent = `클립 ${selectedIds.size}개 선택됨`;
@@ -1062,7 +1193,7 @@ function renderProps() {
   const live = () => { requestDraw(); };
   const done = () => { commit(); renderTimeline(); renderCaptions(); };
 
-  const group = title => { const g = document.createElement('div'); g.className = 'prop-group'; g.innerHTML = `<h4>${title}</h4>`; box.appendChild(g); return g; };
+  const group = title => { const g = document.createElement('div'); g.className = 'prop-group'; g.dataset.tab = TAB_OF[title] || 'basic'; g.innerHTML = `<h4>${title}</h4>`; box.appendChild(g); return g; };
   const slider = (g, label, get, set, min, max, step, opts = {}) => {
     const row = document.createElement('div'); row.className = 'prop';
     row.innerHTML = `<span>${label}</span><input type="range" min="${min}" max="${max}" step="${step}"><input type="number" min="${min}" max="${max}" step="${step}">`;
@@ -1081,9 +1212,27 @@ function renderProps() {
     ta.oninput = () => { c.text = ta.value; live(); }; ta.onchange = done;
     g.appendChild(ta);
     const g2 = group('글꼴');
-    const sf = document.createElement('select'); sf.innerHTML = FONTS.map(f => `<option ${f === c.fontFamily ? 'selected' : ''}>${f}</option>`).join('');
-    sf.onchange = () => { c.fontFamily = sf.value; live(); done(); };
+    const sf = document.createElement('select'); sf.className = 'font-select';
+    const opt = (fam, label) => `<option value="${fam.replace(/"/g, '&quot;')}" ${fam === c.fontFamily ? 'selected' : ''}>${label}</option>`;
+    const fillFonts = sys => {
+      sf.innerHTML = `<optgroup label="무료 한글 글꼴">${Fonts.LIST.filter(f => f.cat === 'ko').map(f => opt(f.family, f.label)).join('')}</optgroup>`
+        + `<optgroup label="무료 영문 글꼴">${Fonts.LIST.filter(f => f.cat === 'en').map(f => opt(f.family, f.label)).join('')}</optgroup>`
+        + `<optgroup label="내 PC 글꼴">${sys.map(f => opt(f, f)).join('')}</optgroup>`;
+      if (![...sf.options].some(o => o.value === c.fontFamily)) sf.insertAdjacentHTML('afterbegin', opt(c.fontFamily, c.fontFamily));
+    };
+    fillFonts(Fonts.SYSTEM_DEFAULT);
+    Fonts.system().then(fillFonts);
+    sf.onchange = async () => {
+      const fam = sf.value;
+      if (Fonts.isFree(fam)) {
+        toast('글꼴을 받는 중이에요…', 1500);
+        try { await Fonts.ensure(fam); } catch (e) { toast('글꼴을 받지 못했어요. 인터넷 연결을 확인해 주세요.'); return; }
+      }
+      c.fontFamily = fam; live(); done(); renderProps();
+    };
     field(g2, '글꼴', sf);
+    const fp = document.createElement('div'); fp.className = 'font-preview'; fp.textContent = '가나다 ABC 123';
+    fp.style.fontFamily = `"${c.fontFamily}"`; field(g2, '미리보기', fp);
     slider(g2, '크기', () => c.fontSize, v => c.fontSize = v, 8, 400, 1);
     const styleRow = document.createElement('div'); styleRow.className = 'chips';
     [['bold', '굵게'], ['italic', '기울임']].forEach(([k, n]) => {
@@ -1177,14 +1326,38 @@ function renderProps() {
       chips.appendChild(b);
     });
     gf.appendChild(chips);
-    const ga = group('보정');
-    slider(ga, '밝기', () => c.filter.brightness, v => c.filter.brightness = v, -100, 100, 1);
-    slider(ga, '대비', () => c.filter.contrast, v => c.filter.contrast = v, -100, 100, 1);
-    slider(ga, '채도', () => c.filter.saturation, v => c.filter.saturation = v, -100, 100, 1);
-    slider(ga, '흐림', () => c.filter.blur, v => c.filter.blur = v, 0, 40, 1);
-    const rs = document.createElement('button'); rs.textContent = '보정 초기화'; rs.className = 'wide';
-    rs.onclick = () => { Object.assign(c.filter, { brightness: 0, contrast: 0, saturation: 0, blur: 0 }); live(); done(); renderProps(); };
-    ga.appendChild(rs);
+    c.color = c.color || {};
+    const gcol = group('기본 보정');
+    slider(gcol, '밝기', () => c.filter.brightness, v => c.filter.brightness = v, -100, 100, 1);
+    slider(gcol, '대비', () => c.filter.contrast, v => c.filter.contrast = v, -100, 100, 1);
+    slider(gcol, '채도', () => c.filter.saturation, v => c.filter.saturation = v, -100, 100, 1);
+    slider(gcol, '흐림', () => c.filter.blur, v => c.filter.blur = v, 0, 40, 1);
+    const glt = group('라이트');
+    [['exposure', '노출'], ['highlights', '하이라이트'], ['shadows', '섀도'], ['whites', '화이트'], ['blacks', '블랙']].forEach(([k, n]) =>
+      slider(glt, n, () => c.color[k] || 0, v => c.color[k] = v, -100, 100, 1));
+    const gct = group('색감');
+    [['temperature', '색온도'], ['tint', '틴트'], ['vibrance', '바이브런스']].forEach(([k, n]) =>
+      slider(gct, n, () => c.color[k] || 0, v => c.color[k] = v, -100, 100, 1));
+    const glut = group('LUT (색 프리셋 파일)');
+    const lrow = document.createElement('div'); lrow.className = 'chips';
+    const lb = document.createElement('button'); lb.textContent = c.color.lut ? '다른 LUT 선택' : 'LUT 불러오기 (.cube)';
+    lb.onclick = async () => {
+      const r = await API.openLut(); if (!r) return;
+      try { lutCache.set(r.path, parseCube(r.text)); } catch (e) { toast(e.message); return; }
+      c.color.lut = { path: r.path, name: r.name }; live(); done(); renderProps();
+    };
+    lrow.appendChild(lb);
+    if (c.color.lut) {
+      const x = document.createElement('button'); x.textContent = '✕ ' + c.color.lut.name; x.title = 'LUT 빼기';
+      x.onclick = () => { delete c.color.lut; live(); done(); renderProps(); };
+      lrow.appendChild(x);
+    }
+    glut.appendChild(lrow);
+    const lh = document.createElement('p'); lh.className = 'hint'; lh.textContent = '인터넷의 무료 LUT(.cube) 파일을 불러와 영화 같은 색감을 입힐 수 있어요.';
+    glut.appendChild(lh);
+    const rs = document.createElement('button'); rs.textContent = '색 보정 모두 초기화'; rs.className = 'wide';
+    rs.onclick = () => { Object.assign(c.filter, { brightness: 0, contrast: 0, saturation: 0, blur: 0 }); const l = c.color.lut; c.color = l ? { lut: l } : {}; live(); done(); renderProps(); };
+    gct.appendChild(rs);
   }
 
   if (m.kind !== 'audio') {
@@ -1318,6 +1491,13 @@ function setSpeed(c, v) {
   commit(); renderTimeline(); renderProps(); requestDraw();
 }
 
+function detachSelectedAudio() {
+  const sel = selectedId && findClip(selectedId);
+  const m = sel && sel.clip.type !== 'text' && mediaOf(sel.clip);
+  if (!m || m.kind !== 'video' || !m.hasAudio || sel.track.kind === 'audio') { toast('소리가 있는 영상 클립을 선택하세요'); return; }
+  if ((sel.clip.volume ?? 1) === 0) { toast('이미 오디오를 분리한 클립이에요'); return; }
+  detachAudio(sel);
+}
 function detachAudio(sel) {
   const c = sel.clip;
   let at = project.tracks.find(t => t.kind === 'audio' && !t.clips.some(o => c.start < clipEnd(o) && clipEnd(c) > o.start));
@@ -1328,6 +1508,48 @@ function detachAudio(sel) {
 }
 
 /* ---------- 텍스트 / 자막 탭 ---------- */
+function selectedMediaClip() {
+  const sel = selectedId && findClip(selectedId);
+  if (!sel || sel.clip.type === 'text' || sel.track.kind === 'audio') { toast('먼저 타임라인에서 영상이나 사진 클립을 선택하세요'); return null; }
+  return sel;
+}
+function renderLibraries() {
+  const sel = selectedId && findClip(selectedId);
+  const c = sel && sel.clip.type !== 'text' ? sel.clip : null;
+  const fx = $('#libEffects'); fx.innerHTML = '';
+  Core.EFFECTS.forEach(e => {
+    const el = document.createElement('div'); el.className = 'lib-item' + (c && (c.effects || []).some(x => x.type === e.type) ? ' on' : '');
+    el.innerHTML = `<span class="ic">${e.icon}</span><span>${e.name}</span>`; el.title = e.hint;
+    el.onclick = () => {
+      const s = selectedMediaClip(); if (!s) return;
+      const cl = s.clip; cl.effects = cl.effects || [];
+      if (cl.effects.some(x => x.type === e.type)) cl.effects = cl.effects.filter(x => x.type !== e.type);
+      else { if (e.type === 'zoomIn' || e.type === 'zoomOut') cl.effects = cl.effects.filter(x => x.type !== 'zoomIn' && x.type !== 'zoomOut'); cl.effects.push({ type: e.type, amount: 50 }); }
+      commit(); renderTimeline(); requestDraw(); propTab[$('#propTitle').textContent] = 'effects'; renderProps(); renderLibraries();
+    };
+    fx.appendChild(el);
+  });
+  const fl = $('#libFilters'); fl.innerHTML = '';
+  FILTERS.forEach(f => {
+    const el = document.createElement('div'); el.className = 'lib-item' + (c && c.filter && c.filter.preset === f.id ? ' on' : '');
+    el.innerHTML = `<div class="sw" style="filter:${f.css || 'none'}"></div><span>${f.name}</span>`;
+    el.onclick = () => { const s = selectedMediaClip(); if (!s) return; s.clip.filter.preset = f.id; commit(); renderTimeline(); requestDraw(); renderProps(); renderLibraries(); };
+    fl.appendChild(el);
+  });
+  const tl = $('#libTransitions'); tl.innerHTML = '';
+  Core.TRANSITIONS.forEach(t => {
+    const el = document.createElement('div'); el.className = 'lib-item' + (c && c.transitionIn && c.transitionIn.type === t.type ? ' on' : '');
+    el.innerHTML = `<span class="ic">⧓</span><span>${t.name}</span>`;
+    el.onclick = () => {
+      const s = selectedMediaClip(); if (!s) return;
+      s.clip.transitionIn = { type: t.type, duration: (s.clip.transitionIn && s.clip.transitionIn.duration) || 0.5 };
+      commit(); renderTimeline(); renderProps(); renderLibraries();
+      if (t.type !== 'none') { seek(Math.max(0, s.clip.start - 0.6)); setPlaying(true); }
+    };
+    tl.appendChild(el);
+  });
+}
+
 function renderTextPresets() {
   const box = $('#textPresets');
   for (const p of TEXT_PRESETS) {
@@ -1339,6 +1561,7 @@ function renderTextPresets() {
     if (s.bgColor) { el.style.background = s.bgColor; }
     if (s.shadow) el.style.textShadow = `0 0 8px ${s.shadowColor}`;
     el.onclick = () => addTextClip({ ...s });
+    if (s.fontFamily && Fonts.isFree(s.fontFamily)) Fonts.ensure(s.fontFamily).catch(() => {});
     box.appendChild(el);
   }
 }
@@ -1406,12 +1629,11 @@ function renderCaptions() {
 async function afterLoad(resetView = true) {
   cleanupEls();
   for (const m of project.media) { m.missing = !(await API.fileExists(m.path)); if (!m.missing) { if (m.hasAudio) loadWave(m); loadStrip(m); } }
-  $('#selRatio').value = `${project.width}x${project.height}`;
-  if (!$('#selRatio').value) { const o = new Option(`${project.width}×${project.height}`, `${project.width}x${project.height}`); $('#selRatio').add(o); $('#selRatio').value = o.value; }
+  syncRatioSelect();
   $('#selFps').value = String(project.fps);
   if (resetView) { setSel(null); playhead = 0; }
   if (selectedId && !findClip(selectedId)) setSel(null);
-  sizeCanvas(); renderAll();
+  sizeCanvas(); renderAll(); ensureProjectFonts();
   const missing = project.media.filter(m => m.missing);
   if (missing.length) toast(`찾을 수 없는 파일이 ${missing.length}개 있어요: ${missing.map(m => m.name).join(', ')}`, 5000);
 }
@@ -1487,6 +1709,7 @@ $('#expGo').onclick = async () => {
   $('#expAbort').classList.remove('hidden'); $('#expDone').classList.add('hidden'); $('#expShow').classList.add('hidden');
   $('#expBar').style.width = '0%'; $('#expStatus').textContent = '내보내는 중… 0%';
   const started = Date.now();
+  await ensureProjectFonts();
   const r = await API.startExport({ project, textPngs: renderTextPngs(), outPath, crf: +$('#expQuality').value, preset: $('#expPreset').value });
   $('#expAbort').classList.add('hidden'); $('#expDone').classList.remove('hidden');
   if (r.ok) {
@@ -1531,6 +1754,74 @@ document.addEventListener('drop', e => {
   const paths = [...e.dataTransfer.files].map(f => API.pathForFile(f)).filter(Boolean);
   importPaths(paths);
 });
+
+/* ---------- 우클릭 메뉴 ---------- */
+function showMenu(x, y, items) {
+  closeMenu();
+  const m = document.createElement('div'); m.id = 'ctxMenu';
+  for (const it of items) {
+    if (it === '-') { const hr = document.createElement('div'); hr.className = 'sep-h'; m.appendChild(hr); continue; }
+    if (!it) continue;
+    const b = document.createElement('button');
+    b.innerHTML = '<span></span><kbd></kbd>';
+    b.firstChild.textContent = it.label; b.lastChild.textContent = it.key || '';
+    if (!it.key) b.lastChild.remove();
+    b.disabled = !!it.disabled;
+    b.onclick = () => { closeMenu(); it.action(); };
+    m.appendChild(b);
+  }
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, window.innerWidth - r.width - 6) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - r.height - 6) + 'px';
+}
+function closeMenu() { const m = $('#ctxMenu'); if (m) m.remove(); }
+window.addEventListener('pointerdown', e => { if (!e.target.closest('#ctxMenu')) closeMenu(); }, true);
+window.addEventListener('blur', closeMenu);
+
+function clipMenu(e, c, tr) {
+  e.preventDefault();
+  if (!isSel(c.id)) selectClip(c.id);
+  const multi = selectedIds.size > 1;
+  const m = c.type === 'text' ? null : mediaOf(c);
+  const visual = c.type !== 'text' && m && m.kind !== 'audio' && tr.kind !== 'audio';
+  const inside = playhead > c.start && playhead < clipEnd(c);
+  const items = [
+    { label: '재생헤드에서 분할', key: 'S', action: () => splitAt(), disabled: !inside || multi },
+    { label: '앞부분 잘라내기', key: 'Q', action: () => trimSide('left'), disabled: !inside || multi },
+    { label: '뒷부분 잘라내기', key: 'W', action: () => trimSide('right'), disabled: !inside || multi },
+    '-',
+    { label: '복사', key: 'Ctrl+C', action: () => copySelected(false), disabled: multi },
+    { label: '잘라내기', key: 'Ctrl+X', action: () => copySelected(true), disabled: multi },
+    { label: '붙여넣기', key: 'Ctrl+V', action: paste, disabled: !clipboard },
+    { label: '복제', key: 'Ctrl+D', action: duplicateSelected, disabled: multi },
+    { label: multi ? `삭제 (${selectedIds.size}개)` : '삭제', key: 'Delete', action: deleteSelected },
+    { label: '삭제하고 빈자리 당기기', key: 'Shift+Delete', action: rippleDelete, disabled: multi },
+  ];
+  if (!multi && m && m.kind === 'video' && m.hasAudio && tr.kind !== 'audio') items.push('-', { label: '오디오 분리', key: 'Ctrl+Shift+S', action: detachSelectedAudio, disabled: (c.volume ?? 1) === 0 });
+  if (!multi && m && m.kind === 'video') items.push({ label: '재생헤드에 정지 화면 넣기', action: () => freezeFrame(findClip(c.id)), disabled: !inside });
+  if (!multi && m && m.kind !== 'image') {
+    items.push('-');
+    [0.5, 1, 1.5, 2].forEach(v => items.push({ label: `속도 ${v}x` + (c.speed === v ? '  ✓' : ''), action: () => setSpeed(c, v) }));
+  }
+  if (!multi && visual) {
+    items.push('-',
+      { label: '화면 꽉 채우기', action: () => { fitClip(c, 'fill'); } },
+      { label: '화면에 맞추기', action: () => { fitClip(c, 'fit'); } },
+      { label: '필터…', action: () => openPropTab('filter') },
+      { label: '색 보정…', action: () => openPropTab('color') },
+      { label: '효과…', action: () => openPropTab('effects') },
+      { label: '전환…', action: () => openPropTab('trans') });
+  }
+  if (!multi && c.type === 'text') items.push('-', { label: '글꼴·색상…', action: () => openPropTab('text') }, { label: '애니메이션…', action: () => openPropTab('anim') });
+  showMenu(e.clientX, e.clientY, items);
+}
+function fitClip(c, mode) {
+  const m = mediaOf(c); if (!m || !m.width) return;
+  c.transform.x = 0; c.transform.y = 0;
+  c.transform.scale = mode === 'fill' ? +(Math.max(project.width / m.width, project.height / m.height) / Math.min(project.width / m.width, project.height / m.height)).toFixed(3) : 1;
+  commit(); renderProps(); requestDraw();
+}
 
 /* ---------- 클립보드 ---------- */
 let clipboard = null;
@@ -1583,7 +1874,8 @@ const SHORTCUTS = [
   ['화면에 맞게 보기', 'Shift+Z'],
   ['텍스트 추가', 'T'],
   ['파일 가져오기', 'Ctrl+I'],
-  ['저장 / 다른 이름으로 저장', 'Ctrl+S / Ctrl+Shift+S'],
+  ['오디오 분리', 'Ctrl+Shift+S'],
+  ['저장 / 다른 이름으로 저장', 'Ctrl+S / Ctrl+Alt+S'],
   ['새 프로젝트 / 열기', 'Ctrl+N / Ctrl+O'],
   ['내보내기', 'Ctrl+E'],
   ['선택 해제', 'Esc'],
@@ -1614,7 +1906,9 @@ document.addEventListener('keydown', e => {
   let handled = true;
   if (ctrl && code === 'KeyZ') shift ? redo() : undo();
   else if (ctrl && code === 'KeyY') redo();
-  else if (ctrl && code === 'KeyS') save(shift);
+  else if (ctrl && shift && code === 'KeyS') detachSelectedAudio();
+  else if (ctrl && e.altKey && code === 'KeyS') save(true);
+  else if (ctrl && code === 'KeyS') save(false);
   else if (ctrl && code === 'KeyO') $('#btnOpen').click();
   else if (ctrl && code === 'KeyN') $('#btnNew').click();
   else if (ctrl && code === 'KeyD') duplicateSelected();
@@ -1692,6 +1986,37 @@ API.onUpdateProgress(v => { $('#updBar').style.width = Math.round(v * 100) + '%'
 $('#updRestart').onclick = () => API.restartApp();
 API.appVersion().then(v => { $('#btnUpdate').title = `업데이트 확인 (현재 버전 ${v.version})`; });
 setTimeout(() => checkUpdate(true), 4000);
+
+/* ---------- 패널 크기 조절 / 접기 ---------- */
+const layout = (() => { try { return JSON.parse(localStorage.getItem('layout') || '{}'); } catch { return {}; } })();
+function applyLayout() {
+  const ws = $('#workspace');
+  ws.style.setProperty('--left-w', (layout.leftHidden ? 0 : (layout.left || 280)) + 'px');
+  ws.style.setProperty('--right-w', (layout.rightHidden ? 0 : (layout.right || 300)) + 'px');
+  $('#left').classList.toggle('collapsed', !!layout.leftHidden);
+  $('#right').classList.toggle('collapsed', !!layout.rightHidden);
+  $('#btnToggleLeft').classList.toggle('on', !layout.leftHidden);
+  $('#btnToggleRight').classList.toggle('on', !layout.rightHidden);
+  try { localStorage.setItem('layout', JSON.stringify(layout)); } catch { }
+  requestAnimationFrame(sizeCanvas);
+}
+function splitter(el, side) {
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const move = ev => {
+      if (side === 'left') { layout.left = clamp(ev.clientX, 180, 520); layout.leftHidden = false; }
+      else { layout.right = clamp(window.innerWidth - ev.clientX, 220, 560); layout.rightHidden = false; }
+      applyLayout();
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  });
+  el.addEventListener('dblclick', () => { layout[side + 'Hidden'] = !layout[side + 'Hidden']; applyLayout(); });
+}
+splitter($('#splitLeft'), 'left'); splitter($('#splitRight'), 'right');
+$('#btnToggleLeft').onclick = () => { layout.leftHidden = !layout.leftHidden; applyLayout(); };
+$('#btnToggleRight').onclick = () => { layout.rightHidden = !layout.rightHidden; applyLayout(); };
+applyLayout();
 
 /* ---------- 시작 ---------- */
 project = newProject();

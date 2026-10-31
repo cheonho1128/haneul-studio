@@ -1,4 +1,4 @@
-# 하늘 스튜디오 (Haneul Studio) v0.2
+# 하늘 스튜디오 (Haneul Studio) v0.3
 
 윈도우용 개인 영상 편집기. Electron + FFmpeg.
 

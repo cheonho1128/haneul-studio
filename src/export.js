@@ -1,7 +1,7 @@
 // FFmpeg 명령 생성기: 프로젝트(JSON)를 ffmpeg 인자 배열로 변환한다.
 'use strict';
 const core = require('./renderer/core.js');
-const { clipDuration, projectDuration, transitionPlan, FILTER_PRESET_FFMPEG } = core;
+const { clipDuration, projectDuration, transitionPlan, FILTER_PRESET_FFMPEG, hasColor, curvesFilter } = core;
 
 function num(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 function f3(v) { return num(v).toFixed(3); }
@@ -143,6 +143,15 @@ function buildExportArgs(project, opts) {
           chain.push(`zoompan=z='1+${z}-${z}*on/${nFrames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${w}x${h}:fps=${FPS}`);
         }
         chain.push(...colorFilters(c.filter));
+        if (hasColor(c.color)) {
+          chain.push(curvesFilter(c.color));
+          const vib = num(c.color.vibrance);
+          if (vib) chain.push(`vibrance=intensity=${(vib / 100).toFixed(3)}`);
+        }
+        if (c.color && c.color.lut && c.color.lut.path) {
+          const lp = c.color.lut.path.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, '');
+          chain.push(`lut3d=file='${lp}'`);
+        }
         if (hasEffect(c, 'invert')) chain.push('negate');
         if (hasEffect(c, 'grain')) chain.push(`noise=alls=${Math.round(8 + 40 * effectAmount(c, 'grain'))}:allf=t+u`);
         if (hasEffect(c, 'vignette')) chain.push(`vignette=a=${(0.25 + 0.6 * effectAmount(c, 'vignette')).toFixed(3)}`);

@@ -30,7 +30,13 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  const { session } = require('electron');
+  // 내 PC 글꼴 목록 읽기 허용
+  session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(perm === 'local-fonts'));
+  session.defaultSession.setPermissionCheckHandler((_wc, perm) => perm === 'local-fonts');
+  createWindow();
+});
 app.on('window-all-closed', () => app.quit());
 app.on('will-quit', () => { if (exportProc) exportProc.kill('SIGKILL'); });
 
@@ -166,6 +172,12 @@ ipcMain.handle('project:open', async () => {
   return { filePath: r.filePaths[0], data: JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8')) };
 });
 
+ipcMain.handle('lut:open', async () => {
+  const r = await dialog.showOpenDialog(win, { title: 'LUT 불러오기', properties: ['openFile'], filters: [{ name: 'LUT', extensions: ['cube'] }] });
+  if (r.canceled) return null;
+  return { path: r.filePaths[0], name: path.basename(r.filePaths[0]), text: fs.readFileSync(r.filePaths[0], 'utf8') };
+});
+ipcMain.handle('file:read-text', (_e, p) => fs.readFileSync(p, 'utf8'));
 ipcMain.handle('file:exists', (_e, p) => fs.existsSync(p));
 
 ipcMain.handle('srt:open', async () => {
@@ -222,6 +234,20 @@ ipcMain.handle('export:start', async (_e, { project, textPngs, outPath, crf, pre
 });
 
 ipcMain.handle('export:cancel', () => { if (exportProc) { exportProc.__cancelled = true; exportProc.kill(); } });
+// 무료 글꼴 받기 (캐시)
+ipcMain.handle('font:get', async (_e, url) => {
+  if (!/^https:\/\/raw\.githubusercontent\.com\/google\/fonts\//.test(url)) throw new Error('허용되지 않은 주소');
+  const dir = path.join(app.getPath('userData'), 'fonts'); fs.mkdirSync(dir, { recursive: true });
+  const f = path.join(dir, decodeURIComponent(url.split('/').slice(-2).join('_')).replace(/[^\w.\-\[\],]/g, '_'));
+  if (fs.existsSync(f) && fs.statSync(f).size > 1000) return f;
+  const { net } = require('electron');
+  const r = await net.fetch(url);
+  if (!r.ok) throw new Error('글꼴을 받지 못했어요 (' + r.status + ')');
+  fs.writeFileSync(f + '.part', Buffer.from(await r.arrayBuffer()));
+  fs.renameSync(f + '.part', f);
+  return f;
+});
+
 ipcMain.handle('app:version', () => ({ version: global.HANEUL ? global.HANEUL.version : app.getVersion(), shell: global.HANEUL ? global.HANEUL.shellVersion : app.getVersion() }));
 let lastUpdateInfo = null;
 ipcMain.handle('update:check', async () => { lastUpdateInfo = await updater.check(); return lastUpdateInfo; });
