@@ -143,7 +143,9 @@ function buildExportArgs(project, opts) {
         const kfS = hasKf(c, 'scale'), kfR = hasKf(c, 'rotation'), kfO = hasKf(c, 'opacity');
         const sMax = kfS ? Math.min(Math.max(0.05, kfMax(c, 'scale')), 4) : num(tr.scale, 1);
         const scale = sMax;
-        const mw = num(m.width, W), mh = num(m.height, H);
+        const cr = c.crop || {}, cl = num(cr.l), ct = num(cr.t), cw = Math.max(0.05, 1 - cl - num(cr.r)), chh = Math.max(0.05, 1 - ct - num(cr.b));
+        const cropped = cl || ct || cw < 1 || chh < 1;
+        const mw = num(m.width, W) * cw, mh = num(m.height, H) * chh;
         const fit = Math.min(W / mw, H / mh) * scale;
         const w = even(mw * fit), h = even(mh * fit);
         const chain = [];
@@ -155,8 +157,25 @@ function buildExportArgs(project, opts) {
           filters.push(...fn(a, o, `br${k}_${bn++}`, `br${k}_${bn++}`, `br${k}_${bn++}`, `br${k}_${bn++}`));
           inLbl = o;
         };
-        if (m.kind !== 'image') chain.push(...(c.reverse ? ['reverse'] : []), `setpts=(PTS-STARTPTS)/${speed.toFixed(4)}`);
-        chain.push(`fps=${FPS}`);
+        const pre = m.kind !== 'image' ? [...(c.reverse ? ['reverse'] : []), `setpts=(PTS-STARTPTS)/${speed.toFixed(4)}`] : [];
+        const cropF = cropped ? [`crop=trunc(iw*${cw.toFixed(4)}/2)*2:trunc(ih*${chh.toFixed(4)}/2)*2:trunc(iw*${cl.toFixed(4)}):trunc(ih*${ct.toFixed(4)})`] : [];
+        // 배경 채우기 (흐림 / 색)
+        const bg = c.bg && c.bg.type && c.bg.type !== 'none' ? c.bg : null;
+        if (bg) {
+          const bgEnd = `,${fadeF.length ? fadeF.join(',') + ',' : ''}${extend > 0 ? `tpad=stop_mode=clone:stop_duration=${f3(extend)},` : ''}setpts=PTS-STARTPTS+${f3(start)}/TB`;
+          if (bg.type === 'blur') {
+            filters.push(`[${k}:v]split[bgs${k}][bgm${k}]`);
+            inLbl = `bgm${k}`;
+            const sig = ((10 + 40 * num(bg.amount, 50) / 100) * W / 1920).toFixed(2);
+            filters.push(`[bgs${k}]${[...pre, `fps=${FPS}`, ...cropF, `scale=${W}:${H}:force_original_aspect_ratio=increase`, `crop=${W}:${H}`, `gblur=sigma=${sig}`, 'eq=brightness=-0.04', 'format=rgba'].join(',')}${bgEnd}[bgv${k}]`);
+          } else {
+            filters.push(`color=c=${hex(bg.color || '#000000')}:s=${W}x${H}:r=${FPS}:d=${f3(vdur)},format=rgba${bgEnd}[bgv${k}]`);
+          }
+          filters.push(`[${last}][bgv${k}]overlay=0:0:eof_action=pass:enable='between(t,${f3(start)},${f3(start + vdur)})'[o${ov}]`);
+          last = `o${ov++}`;
+        }
+        chain.push(...pre);
+        chain.push(`fps=${FPS}`, ...cropF);
         // 모자이크
         const pix = effectAmount(c, 'pixelate');
         if (hasEffect(c, 'pixelate')) {
@@ -286,30 +305,55 @@ function buildExportArgs(project, opts) {
 
   const OW = opts.outWidth ? even(opts.outWidth) : W, OH = opts.outHeight ? even(opts.outHeight) : H;
   const outScale = (OW !== W || OH !== H) ? `scale=${OW}:${OH}:force_original_aspect_ratio=decrease,pad=${OW}:${OH}:(ow-iw)/2:(oh-ih)/2:color=black,` : '';
-  filters.push(`[${last}]${outScale}format=yuv420p[vout]`);
+  const fmt = opts.format || 'mp4';
+  if (fmt === 'gif') {
+    const gw = Math.min(OW, 720);
+    filters.push(`[${last}]${outScale}fps=${Math.min(15, opts.outFps || FPS)},scale=${even(gw)}:-2:flags=lanczos,split[gp1][gp2];[gp1]palettegen=stats_mode=diff[gpal];[gp2][gpal]paletteuse=dither=bayer:bayer_scale=4[vout]`);
+  } else filters.push(`[${last}]${outScale}format=yuv420p[vout]`);
 
   if (audioLabels.length) {
-    filters.push(`${audioLabels.map(l => `[${l}]`).join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,apad,atrim=0:${f3(total)}[aout]`);
+    filters.push(`${audioLabels.map(l => `[${l}]`).join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,apad,atrim=0:${f3(total)}${opts.loudnorm ? ',loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000' : ''}[aout]`);
   } else {
     inputs.push('-f', 'lavfi', '-t', f3(total), '-i', 'anullsrc=r=48000:cl=stereo');
     filters.push(`[${idx++}:a]anull[aout]`);
   }
 
-  const args = ['-y', '-hide_banner', ...inputs,
-    '-filter_complex', filters.join(';'),
-    '-map', '[vout]', '-map', '[aout]',
+  const isAudioF = f => /^\[\d+:a\]/.test(f) || /\[aout\]$/.test(f) || /^\[a\d+\]/.test(f);
+  const time = opts.range ? ['-ss', f3(opts.range.from), '-t', f3(opts.range.to - opts.range.from)] : ['-t', f3(total)];
+  let out;
+  if (fmt === 'mp3') {
+    // 소리만: 영상 필터는 빼고 오디오만 계산
+    const af = filters.filter(isAudioF);
+    out = ['-filter_complex', af.join(';'), '-map', '[aout]', '-vn', '-c:a', 'libmp3lame', '-b:a', '192k', '-ar', '48000', ...time];
+  } else if (fmt === 'gif') out = ['-filter_complex', filters.filter(f => !isAudioF(f)).join(';'), '-map', '[vout]', '-an', '-loop', '0', ...time];
+  else if (fmt === 'png') out = ['-filter_complex', filters.filter(f => !isAudioF(f)).join(';'), '-map', '[vout]', '-an', '-ss', f3(opts.range ? opts.range.from : 0), '-frames:v', '1', '-update', '1'];
+  else out = ['-filter_complex', filters.join(';'), '-map', '[vout]', '-map', '[aout]',
     '-c:v', 'libx264', '-preset', opts.preset || 'medium', '-crf', String(opts.crf || 20),
     '-r', String(opts.outFps || FPS), '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
-    ...(opts.range ? ['-ss', f3(opts.range.from), '-t', f3(opts.range.to - opts.range.from)] : ['-t', f3(total)]),
-    '-movflags', '+faststart',
-    '-progress', 'pipe:1', '-nostats',
-    opts.outPath];
-  return { args, duration: opts.range ? opts.range.to - opts.range.from : total };
+    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', ...time, '-movflags', '+faststart'];
+  const args = ['-y', '-hide_banner', ...inputs, ...out, '-progress', 'pipe:1', '-nostats', opts.outPath];
+  return { args, duration: fmt === 'png' ? 0.04 : (opts.range ? opts.range.to - opts.range.from : total) };
 }
 
+const VOICE_FILTERS = {
+  echo: ['aecho=0.8:0.85:280:0.35'],
+  cave: ['aecho=0.8:0.88:450|900:0.4|0.25'],
+  phone: ['highpass=f=400', 'lowpass=f=3200', 'acompressor=threshold=0.1:ratio=4'],
+  radio: ['highpass=f=250', 'lowpass=f=4500', 'acrusher=bits=10:mix=0.25'],
+  chipmunk: ['asetrate=48000*1.45', 'aresample=48000', 'atempo=0.6897'],
+  deep: ['asetrate=48000*0.75', 'aresample=48000', 'atempo=1.3333'],
+  robot: ["afftfilt=real='hypot(re,im)*sin(0)':imag='hypot(re,im)*cos(0)':win_size=512:overlap=0.75"],
+};
+/** 음성 효과·잡음 제거 */
+function voiceFilters(c) {
+  const out = [];
+  if (c.denoise) out.push(`afftdn=nr=${Math.round(10 + num(c.denoise === true ? 50 : c.denoise, 50) * 0.3)}:nf=-30`);
+  if (c.voice && VOICE_FILTERS[c.voice]) out.push(...VOICE_FILTERS[c.voice]);
+  return out;
+}
 function audioChain(filters, k, c, speed, dur, start) {
   const chain = [...(c.reverse ? ['areverse'] : []), 'asetpts=PTS-STARTPTS', 'aresample=48000', 'aformat=channel_layouts=stereo', ...atempoChain(speed), `atrim=0:${f3(dur)}`];
+  chain.push(...voiceFilters(c));
   const vol = num(c.volume, 1);
   if (hasKf(c, 'volume')) chain.push(`volume='max(0,${kfExpr(c, 'volume', 't')})':eval=frame`);
   else if (Math.abs(vol - 1) > 1e-3) chain.push(`volume=${vol.toFixed(3)}`);
@@ -322,4 +366,11 @@ function audioChain(filters, k, c, speed, dur, start) {
   return `a${k}`;
 }
 
-module.exports = { buildExportArgs, projectDuration, clipDuration };
+/** 음성 효과 미리 듣기용 짧은 소리 파일 명령 */
+function voicePreviewArgs(c, mediaPath, outPath) {
+  const len = Math.min(6, Math.max(0.5, num(c.out) - num(c.in)));
+  const chain = ['aresample=48000', 'aformat=channel_layouts=stereo', ...voiceFilters(c), `atrim=0:${f3(len)}`];
+  return ['-y', '-hide_banner', '-v', 'error', '-ss', f3(c.in), '-t', f3(len + 0.5), '-i', mediaPath, '-vn', '-af', chain.join(','), '-ar', '48000', outPath];
+}
+
+module.exports = { buildExportArgs, projectDuration, clipDuration, voicePreviewArgs, VOICE_FILTERS };

@@ -1,10 +1,10 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn, execFile } = require('child_process');
-const { buildExportArgs } = require('./export');
+const { buildExportArgs, voicePreviewArgs } = require('./export');
 const { cloudRoots, resolveProjectPaths, packProject } = require('./projectfiles');
 
 function binPath(p) { return p.replace('app.asar', 'app.asar.unpacked'); }
@@ -181,6 +181,45 @@ ipcMain.handle('cloud:save', async (_e, { data, filePath }) => {
   return { filePath, data };
 });
 
+/* ---------- GitHub에 프로젝트 올리기 / 받기 ---------- */
+const { GitHubStore, saveToGitHub, openFromGitHub } = require('./github');
+const ghFile = () => path.join(app.getPath('userData'), 'github.json');
+function ghConfig() {
+  try {
+    const j = JSON.parse(fs.readFileSync(ghFile(), 'utf8'));
+    const token = j.enc && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(j.enc, 'base64')) : j.token;
+    return { owner: j.owner, repo: j.repo, token };
+  } catch (_) { return null; }
+}
+ipcMain.handle('github:config', () => { const c = ghConfig(); return c ? { repo: `${c.owner}/${c.repo}`, hasToken: !!c.token } : null; });
+ipcMain.handle('github:connect', async (_e, { repo, token }) => {
+  const m = String(repo || '').trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').match(/^([\w.-]+)\/([\w.-]+)$/);
+  if (!m) throw new Error('저장소는 "아이디/저장소이름" 모양으로 넣어 주세요. 예: cheonho1128/haneul-projects');
+  const tok = String(token || '').trim() || (ghConfig() || {}).token;
+  if (!tok) throw new Error('토큰을 넣어 주세요.');
+  const store = new GitHubStore({ owner: m[1], repo: m[2], token: tok });
+  const info = await store.check();
+  await store.ensureRelease();
+  const save = { owner: m[1], repo: m[2] };
+  if (safeStorage.isEncryptionAvailable()) save.enc = safeStorage.encryptString(tok).toString('base64'); else save.token = tok;
+  fs.writeFileSync(ghFile(), JSON.stringify(save));
+  return { repo: info.fullName };
+});
+ipcMain.handle('github:disconnect', () => { try { fs.unlinkSync(ghFile()); } catch (_) {} return true; });
+const ghStore = () => { const c = ghConfig(); if (!c || !c.token) throw new Error('먼저 GitHub를 연결해 주세요.'); return new GitHubStore(c); };
+const ghProgress = v => win && win.webContents.send('github:progress', v);
+ipcMain.handle('github:list', async () => ghStore().listProjects());
+ipcMain.handle('github:save', async (_e, { name, data }) => saveToGitHub(ghStore(), name, data, ghProgress));
+ipcMain.handle('github:open', async (_e, name) => openFromGitHub(ghStore(), name, path.join(app.getPath('userData'), 'github-media'), ghProgress));
+ipcMain.handle('shell:open-url', (_e, url) => { if (/^https:\/\/github\.com\//.test(url)) shell.openExternal(url); });
+
+// 음성 효과 미리 듣기
+ipcMain.handle('audio:voice-preview', async (_e, clip, p) => {
+  const out = path.join(cacheDir(), `voice_${Date.now()}.wav`);
+  await run(FFMPEG, voicePreviewArgs(clip, p, out));
+  return out;
+});
+
 // 정지 화면용 프레임 추출
 ipcMain.handle('media:frame', async (_e, p, t) => {
   const out = path.join(cacheDir(), `freeze_${Date.now()}.png`);
@@ -228,12 +267,14 @@ ipcMain.handle('srt:save', async (_e, text) => {
   return r.filePath;
 });
 
-ipcMain.handle('export:choose', async () => {
-  const r = await dialog.showSaveDialog(win, { title: '동영상 내보내기', defaultPath: '내 영상.mp4', filters: [{ name: 'MP4 동영상', extensions: ['mp4'] }] });
+const EXPORT_TYPES = { mp4: ['MP4 동영상', '내 영상'], gif: ['GIF 움짤', '내 움짤'], mp3: ['MP3 소리', '내 소리'], png: ['PNG 사진', '내 화면'] };
+ipcMain.handle('export:choose', async (_e, fmt = 'mp4') => {
+  const [nm, base] = EXPORT_TYPES[fmt] || EXPORT_TYPES.mp4;
+  const r = await dialog.showSaveDialog(win, { title: '내보내기', defaultPath: `${base}.${fmt}`, filters: [{ name: nm, extensions: [fmt] }] });
   return r.canceled ? null : r.filePath;
 });
 
-ipcMain.handle('export:start', async (_e, { project, textPngs, outPath, crf, preset, outWidth, outHeight, outFps, range }) => {
+ipcMain.handle('export:start', async (_e, { project, textPngs, outPath, crf, preset, outWidth, outHeight, outFps, range, format, loudnorm }) => {
   const dir = fs.mkdtempSync(path.join(TMP, 'export_'));
   const textImages = {};
   let n = 0;
@@ -247,7 +288,7 @@ ipcMain.handle('export:start', async (_e, { project, textPngs, outPath, crf, pre
       }),
     };
   }
-  const { args, duration } = buildExportArgs(project, { outPath, textImages, crf, preset, outWidth, outHeight, outFps, range });
+  const { args, duration } = buildExportArgs(project, { outPath, textImages, crf, preset, outWidth, outHeight, outFps, range, format, loudnorm });
   return new Promise(resolve => {
     exportProc = spawn(FFMPEG, args, { windowsHide: true });
     let errTail = '';

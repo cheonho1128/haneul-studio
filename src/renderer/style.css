@@ -223,3 +223,18 @@ label.check input { width: auto; }
 .cloud-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel2); }
 .cloud-row .hint { margin: 2px 0 0; word-break: break-all; }
 .ask-input { width: 100%; box-sizing: border-box; margin: 6px 0 12px; padding: 7px 9px; }
+
+.clip.fx-drop { outline: 2px solid #ffd84f; outline-offset: -2px; filter: brightness(1.25); }
+.clip.fx-drop-start::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: #ffd84f; z-index: 4; box-shadow: 0 0 8px #ffd84f; }
+.fx-tile[draggable="true"] { cursor: grab; }
+
+.gh-steps { padding-left: 20px; line-height: 1.7; font-size: 13px; }
+.gh-steps a { color: var(--accent); }
+.gh-body label { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; font-size: 12.5px; }
+.gh-body input[type=text], .gh-body input[type=password] { padding: 7px 9px; }
+.gh-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
+button.small { padding: 2px 8px; font-size: 11.5px; }
+.gh-body label { align-items: stretch; text-align: left; }
+.gh-body input[type=text], .gh-body input[type=password] { width: 100%; box-sizing: border-box; text-align: left; }
+.gh-bar { margin-top: 8px; }
+.gh-bar div { height: 100%; width: 0; background: var(--accent2); transition: width .2s; }

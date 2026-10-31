@@ -104,7 +104,7 @@ function redo() {
   undoStack.push(snapshot()); project = JSON.parse(redoStack.pop()); commit.last = snapshot();
   afterLoad(false); setDirty(true);
 }
-function setDirty(v) { dirty = v; $('#projName').textContent = (filePath ? filePath.split(/[\\/]/).pop() : '제목 없음') + (dirty ? ' *' : ''); }
+function setDirty(v) { dirty = v; $('#projName').textContent = (filePath ? filePath.split(/[\\/]/).pop() : project && project.ghProject ? '☁ ' + project.ghProject : '제목 없음') + (dirty ? ' *' : ''); }
 
 /* ---------- 미디어 ---------- */
 async function importPaths(paths) {
@@ -467,9 +467,35 @@ function applyLut(p, L) {
   }
 }
 
+/* ---------- 자르기(크롭) · 배경 채우기 ---------- */
+const hasCrop = c => !!c.crop && !!(c.crop.l || c.crop.t || c.crop.r || c.crop.b);
+function cropDims(c, w, h) { const cr = c.crop || {}; return [w * Math.max(0.05, 1 - (cr.l || 0) - (cr.r || 0)), h * Math.max(0.05, 1 - (cr.t || 0) - (cr.b || 0))]; }
+function cropSrc(src, c) {
+  if (!hasCrop(c)) return src;
+  const fw = src.videoWidth || src.naturalWidth || src.width, fh = src.videoHeight || src.naturalHeight || src.height;
+  if (!fw || !fh) return src;
+  const [cw, ch] = cropDims(c, fw, fh), k = Math.min(1, 1920 / cw);
+  const cc = fxCanvas(8, cw * k, ch * k);
+  cc.getContext('2d').drawImage(src, fw * (c.crop.l || 0), fh * (c.crop.t || 0), cw, ch, 0, 0, cc.width, cc.height);
+  return cc;
+}
+function drawClipBg(src, c, W, H, alpha) {
+  ctx.save(); ctx.globalAlpha = alpha;
+  if (c.bg.type === 'color') { ctx.fillStyle = c.bg.color || '#000'; ctx.fillRect(0, 0, W, H); }
+  else {
+    const sw = src.videoWidth || src.naturalWidth || src.width, sh = src.videoHeight || src.naturalHeight || src.height;
+    if (sw && sh) {
+      const k = Math.max(W / sw, H / sh), dw = sw * k, dh = sh * k;
+      ctx.filter = `blur(${((10 + 40 * (c.bg.amount ?? 50) / 100) * W / 1920).toFixed(2)}px) brightness(0.96)`;
+      ctx.drawImage(src, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    }
+  }
+  ctx.restore();
+}
+
 /** 미디어 클립 한 장면을 그린다 */
 function drawMediaClip(src, c, m, W, H, t, local, dur, tp, alpha) {
-  const sw = src.videoWidth || src.naturalWidth || m.width, sh = src.videoHeight || src.naturalHeight || m.height;
+  const sw = src.videoWidth || src.naturalWidth || src.width || m.width, sh = src.videoHeight || src.naturalHeight || src.height || m.height;
   if (!sw || !sh) return;
   const tf0 = c.transform || { scale: 1, x: 0, y: 0, rotation: 0 };
   const lk = Math.min(local, dur);
@@ -661,6 +687,8 @@ function draw() {
       }
       if (tr.hidden) continue;
       if ((src.tagName === 'VIDEO' && src.readyState < 2) || (src.tagName === 'IMG' && !src.complete)) continue;
+      src = cropSrc(src, ce);
+      if (ce.bg && ce.bg.type && ce.bg.type !== 'none') drawClipBg(src, ce, W, H, a);
       drawMediaClip(src, ce, m, W, H, t, local, dur, tp, a);
     }
   }
@@ -685,8 +713,9 @@ function clipBox(c, W, H, s) {
   const m = mediaOf(c); if (!m) return null;
   const lk = clamp(playhead - c.start, 0, clipDur(c));
   const tf = c.kf ? { scale: Core.kfValue(c, 'scale', lk), x: Core.kfValue(c, 'x', lk), y: Core.kfValue(c, 'y', lk), rotation: Core.kfValue(c, 'rotation', lk) } : c.transform;
-  const fit = Math.min(W / m.width, H / m.height) * tf.scale;
-  return { cx: W / 2 + tf.x * W, cy: H / 2 + tf.y * H, w: m.width * fit, h: m.height * fit, rot: tf.rotation || 0 };
+  const [mw, mh] = cropDims(c, m.width, m.height);
+  const fit = Math.min(W / mw, H / mh) * tf.scale;
+  return { cx: W / 2 + tf.x * W, cy: H / 2 + tf.y * H, w: mw * fit, h: mh * fit, rot: tf.rotation || 0 };
 }
 function drawSelection(c, W, H, s) {
   const b = clipBox(c, W, H, s); if (!b) return;
@@ -821,11 +850,12 @@ function renderTimeline() {
     const row = document.createElement('div');
     row.className = 'track'; row.style.setProperty('--h', h + 'px'); row.dataset.id = tr.id;
     row.ondragover = e => {
+      if (dragFx) { fxDragOver(e, tr, row); return; }
       if (!e.dataTransfer.types.includes('text/media-id')) return;
       if (dragMediaKind && !trackFits(tr, dragMediaKind)) return;
       e.preventDefault(); row.classList.add('drop-ok');
     };
-    row.ondragleave = () => row.classList.remove('drop-ok');
+    row.ondragleave = () => { row.classList.remove('drop-ok'); if (dragFx) fxDropTarget(null); };
     row.addEventListener('contextmenu', e => {
       if (e.target !== row) return;
       e.preventDefault();
@@ -843,6 +873,7 @@ function renderTimeline() {
     });
     row.ondrop = e => {
       row.classList.remove('drop-ok');
+      if (dragFx) { e.preventDefault(); fxDrop(e, tr, row); return; }
       const m = project.media.find(x => x.id === e.dataTransfer.getData('text/media-id')); if (!m) return;
       e.preventDefault();
       const x = e.clientX - row.getBoundingClientRect().left;
@@ -1323,7 +1354,7 @@ function addTrack(kind) {
 const TAB_OF = {
   '내용': 'text', '글꼴': 'text', '색상': 'text', '위치': 'text', '일괄 적용': 'text',
   '등장 애니메이션': 'anim', '시간 · 전환': 'anim',
-  '화면': 'basic', '정지 화면': 'basic', '속도': 'basic', '역재생': 'basic', '소리': 'audio',
+  '화면': 'basic', '자르기 (크롭)': 'basic', '배경 채우기': 'basic', '음성 효과': 'audio', '정지 화면': 'basic', '속도': 'basic', '역재생': 'basic', '소리': 'audio',
   '필터': 'filter', '기본 보정': 'color', '라이트': 'color', '색감': 'color', 'LUT (색 프리셋 파일)': 'color',
   '효과': 'effects', '크로마키 (배경색 지우기)': 'effects',
   '전환 (앞 클립에서 넘어올 때)': 'trans', '전환 효과 · 시간': 'trans',
@@ -1621,6 +1652,40 @@ function renderPropsInner() {
     }
   }
 
+  if (m.kind === 'video' || m.kind === 'image') {
+    const gc = group('자르기 (크롭)');
+    c.crop = c.crop || { l: 0, t: 0, r: 0, b: 0 };
+    const pct = k => ({ get: () => Math.round((c.crop[k] || 0) * 100), set: v => { c.crop[k] = v / 100; } });
+    [['왼쪽', 'l'], ['오른쪽', 'r'], ['위', 't'], ['아래', 'b']].forEach(([n, k]) => { const q = pct(k); slider(gc, n + '(%)', q.get, q.set, 0, 45, 1); });
+    const crs = document.createElement('div'); crs.className = 'chips';
+    [['원래대로', null], ['16:9', 16 / 9], ['9:16', 9 / 16], ['1:1', 1], ['4:5', 4 / 5]].forEach(([n, r]) => {
+      const b = document.createElement('button'); b.textContent = n;
+      b.onclick = () => {
+        c.crop = { l: 0, t: 0, r: 0, b: 0 };
+        if (r) { const cur = m.width / m.height; if (cur > r) { const cut = (1 - r / cur) / 2; c.crop.l = c.crop.r = +cut.toFixed(4); } else { const cut = (1 - cur / r) / 2; c.crop.t = c.crop.b = +cut.toFixed(4); } }
+        live(); done(); renderProps();
+      };
+      crs.appendChild(b);
+    });
+    field(gc, '비율로 자르기', crs);
+
+    const gb = group('배경 채우기');
+    c.bg = c.bg || { type: 'none', amount: 50, color: '#000000' };
+    const bgs = document.createElement('div'); bgs.className = 'chips';
+    [['없음', 'none'], ['흐림', 'blur'], ['색', 'color']].forEach(([n, v]) => {
+      const b = document.createElement('button'); b.textContent = n; b.className = c.bg.type === v ? 'on' : '';
+      b.onclick = () => { c.bg.type = v; live(); done(); renderProps(); };
+      bgs.appendChild(b);
+    });
+    field(gb, '종류', bgs);
+    if (c.bg.type === 'blur') slider(gb, '흐림 정도', () => c.bg.amount ?? 50, v => c.bg.amount = v, 0, 100, 1);
+    if (c.bg.type === 'color') { const ci = document.createElement('input'); ci.type = 'color'; ci.value = c.bg.color || '#000000'; ci.oninput = () => { c.bg.color = ci.value; live(); }; ci.onchange = done; field(gb, '색', ci); }
+    const bh = document.createElement('p'); bh.className = 'hint'; bh.textContent = '세로 영상을 가로 화면에 넣을 때처럼 빈 곳을 흐린 영상이나 색으로 채워요.';
+    gb.appendChild(bh);
+    const ab = document.createElement('button'); ab.className = 'wide'; ab.textContent = '같은 트랙 모든 클립에 적용';
+    ab.onclick = () => { sel.track.clips.forEach(o => { if (o.type !== 'text' && o.type !== 'adjust') o.bg = { ...c.bg }; }); live(); done(); toast('트랙 전체에 배경 채우기를 적용했어요'); };
+    gb.appendChild(ab);
+  }
   if (m.kind === 'video') {
     const gfz = group('정지 화면');
     const fb = document.createElement('button'); fb.className = 'wide'; fb.textContent = '재생헤드 위치에 정지 화면 넣기 (3초)';
@@ -1654,6 +1719,29 @@ function renderPropsInner() {
       const b = document.createElement('button'); b.className = 'wide'; b.textContent = '오디오 분리 (별도 트랙으로)';
       b.onclick = () => detachAudio(sel);
       gv.appendChild(b);
+    }
+    if (m.hasAudio || m.kind === 'audio') {
+      const gvo = group('음성 효과');
+      const vs = document.createElement('div'); vs.className = 'chips';
+      VOICES.forEach(([n, v]) => {
+        const b = document.createElement('button'); b.textContent = n; b.className = (c.voice || 'none') === v ? 'on' : '';
+        b.onclick = () => { c.voice = v; done(); renderProps(); };
+        vs.appendChild(b);
+      });
+      gvo.appendChild(vs);
+      const dn = document.createElement('label'); dn.className = 'chk'; dn.innerHTML = '<input type="checkbox"> 잡음 제거 (바람·웅웅 소리 줄이기)';
+      dn.querySelector('input').checked = !!c.denoise;
+      dn.querySelector('input').onchange = e => { c.denoise = e.target.checked; done(); };
+      gvo.appendChild(dn);
+      const pb = document.createElement('button'); pb.className = 'wide'; pb.textContent = '▶ 효과 넣은 소리 미리 듣기 (6초)';
+      pb.onclick = async () => {
+        pb.disabled = true; pb.textContent = '만드는 중…';
+        try { const f = await API.voicePreview(c, m.path); playPreviewSound(f); } catch (e) { toast('미리 듣기를 만들지 못했어요'); }
+        pb.disabled = false; pb.textContent = '▶ 효과 넣은 소리 미리 듣기 (6초)';
+      };
+      gvo.appendChild(pb);
+      const vh = document.createElement('p'); vh.className = 'hint'; vh.textContent = '음성 효과와 잡음 제거는 내보낸 영상에 들어가요. 편집 화면에서는 원래 소리로 들리니 미리 듣기로 확인하세요.';
+      gvo.appendChild(vh);
     }
   }
   const gt = group('전환 효과 · 시간');
@@ -1778,6 +1866,57 @@ function selectedMediaClip() {
   if (!sel || sel.clip.type === 'text' || sel.clip.type === 'adjust' || sel.track.kind === 'audio') { toast('먼저 타임라인에서 영상이나 사진 클립을 선택하세요'); return null; }
   return sel;
 }
+const VOICES = [['없음', 'none'], ['메아리', 'echo'], ['동굴', 'cave'], ['전화기', 'phone'], ['라디오', 'radio'], ['다람쥐', 'chipmunk'], ['굵은 목소리', 'deep'], ['로봇', 'robot']];
+let previewSound = null;
+function playPreviewSound(file) {
+  if (previewSound) previewSound.pause();
+  setPlaying(false);
+  previewSound = new Audio('file:///' + encodeURI(file.replace(/\\/g, '/').replace(/^\/+/, '')));
+  previewSound.play().catch(() => toast('소리를 재생하지 못했어요'));
+}
+
+/* ---------- 효과·전환 끌어다 놓기 ---------- */
+let dragFx = null;
+/** 놓을 위치의 클립 (전환은 가까운 클립 경계의 뒤쪽 클립) */
+function fxTargetAt(e, tr, row) {
+  const t = (e.clientX - row.getBoundingClientRect().left) / pxPerSec;
+  const clips = tr.clips.filter(c => c.type !== 'text').sort((a, b) => a.start - b.start);
+  if (dragFx.kind === 'effect') {
+    const c = clips.find(c => t >= c.start && t < clipEnd(c));
+    return c && !(mediaOf(c) && mediaOf(c).kind === 'audio') ? c : null;
+  }
+  if (tr.kind !== 'video') return null;
+  let best = null, bd = Infinity;
+  for (const c of clips) { if (c.type === 'adjust') continue; const d = Math.abs(t - c.start); if (d < bd) { bd = d; best = c; } }
+  // 클립 안쪽 깊숙이 놓으면 그 클립의 시작 부분에 넣기
+  const inside = clips.find(c => t >= c.start && t < clipEnd(c) && c.type !== 'adjust');
+  if (inside && (bd * pxPerSec > 60)) best = inside;
+  return best;
+}
+function fxDropTarget(c) {
+  document.querySelectorAll('.clip.fx-drop, .clip.fx-drop-start').forEach(x => x.classList.remove('fx-drop', 'fx-drop-start'));
+  if (!c) return;
+  const el = document.querySelector(`.clip[data-id="${c.id}"]`);
+  if (el) el.classList.add(dragFx && dragFx.kind === 'transition' ? 'fx-drop-start' : 'fx-drop');
+}
+function fxDragOver(e, tr, row) {
+  const c = fxTargetAt(e, tr, row);
+  fxDropTarget(c);
+  if (c) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
+}
+function fxDrop(e, tr, row) {
+  const c = fxTargetAt(e, tr, row);
+  const f = dragFx; dragFx = null; fxDropTarget(null); document.body.classList.remove('fx-dragging');
+  if (!c || !f) return;
+  if (f.kind === 'effect') {
+    if (!(c.effects || []).some(x => x.type === f.type)) toggleEffect(c, f.type);
+  } else setTransition(c, f.type);
+  setSel(c.id);
+  commit(); renderTimeline(); renderProps(); requestDraw();
+  toast(f.kind === 'effect' ? `효과 '${f.name}'를 넣었어요` : `전환 '${f.name}'을 넣었어요`);
+  if (f.kind === 'transition') { seek(Math.max(0, c.start - 0.8)); setPlaying(true); }
+}
+
 /* ---------- 효과·전환 미리보기 목록 ---------- */
 let hoverPv = null;
 const fxCat = { effect: '전체', transition: '전체' };
@@ -1823,7 +1962,7 @@ function fxGrid(kind, getClip, apply) {
   const bar = document.createElement('div'); bar.className = 'fx-cats';
   const grid = document.createElement('div'); grid.className = 'fx-grid';
   const hint = document.createElement('p'); hint.className = 'hint';
-  hint.textContent = '마우스를 올리면 선택한 클립에 미리 보여 주고, 누르면 적용돼요.';
+  hint.textContent = kind === 'effect' ? '마우스를 올리면 움직임을 볼 수 있어요. 타임라인의 클립으로 끌어다 놓거나, 클립을 선택하고 누르면 적용돼요.' : '마우스를 올리면 움직임을 볼 수 있어요. 타임라인의 클립 사이로 끌어다 놓거나, 클립을 선택하고 누르면 적용돼요.';
   const fill = () => {
     grid.innerHTML = '';
     const c = getClip();
@@ -1834,8 +1973,13 @@ function fxGrid(kind, getClip, apply) {
       const cv = FxPreview.canvas(kind, type);
       const nm = document.createElement('span'); nm.textContent = it.name;
       el.append(cv, nm);
-      el.onmouseenter = () => { FxPreview.play(cv, true); const cc = getClip(); if (cc && type !== 'none') startHoverPreview(kind, type, cc); };
-      el.onmouseleave = () => { FxPreview.play(cv, false); stopHoverPreview(); };
+      el.onmouseenter = () => FxPreview.play(cv, true);
+      el.onmouseleave = () => FxPreview.play(cv, false);
+      if (type !== 'none') {
+        el.draggable = true;
+        el.ondragstart = e => { dragFx = { kind, type, name: it.name }; e.dataTransfer.setData('text/fx', type); e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setDragImage(cv, 40, 22); document.body.classList.add('fx-dragging'); };
+        el.ondragend = () => { dragFx = null; fxDropTarget(null); document.body.classList.remove('fx-dragging'); };
+      }
       el.onclick = () => {
         const cc = getClip();
         if (!cc) { toast('먼저 타임라인에서 클립을 선택하세요'); return; }
@@ -1968,14 +2112,19 @@ function renderAll() { renderMedia(); renderTimeline(); renderProps(); renderCap
 /** 저장 후 바뀐 파일 위치(클라우드 폴더로 복사 등)를 지금 프로젝트에 반영 */
 function applySaved(data) {
   const byId = Object.fromEntries((data.media || []).map(m => [m.id, m]));
-  for (const m of project.media) { const n = byId[m.id]; if (n) { m.path = n.path; if (n.rel) m.rel = n.rel; else delete m.rel; } }
+  for (const m of project.media) { const n = byId[m.id]; if (n) { m.path = n.path; if (n.rel) m.rel = n.rel; else delete m.rel; if (n.gh) { m.gh = n.gh; m.ghName = n.ghName; } } }
   const clipById = {};
   for (const t of data.tracks || []) for (const c of t.clips || []) clipById[c.id] = c;
-  for (const t of project.tracks) for (const c of t.clips) { const n = clipById[c.id]; if (n && n.color && n.color.lut && c.color && c.color.lut) { c.color.lut.path = n.color.lut.path; c.color.lut.rel = n.color.lut.rel; } }
+  for (const t of project.tracks) for (const c of t.clips) { const n = clipById[c.id]; if (n && n.color && n.color.lut && c.color && c.color.lut) { c.color.lut.path = n.color.lut.path; c.color.lut.rel = n.color.lut.rel; if (n.color.lut.gh) { c.color.lut.gh = n.color.lut.gh; c.color.lut.ghName = n.color.lut.ghName; } } }
   if (data.cloud) project.cloud = true;
   commit.last = snapshot();
 }
 async function save(saveAs = false) {
+  if (!saveAs && !filePath && project.ghProject) {
+    toast('GitHub에 저장 중…', 8000);
+    try { await githubSaveNow(project.ghProject); toast('GitHub에 저장했어요'); return true; }
+    catch (e) { toast('GitHub에 저장하지 못했어요: ' + errMsg(e), 6000); return false; }
+  }
   const r = await API.saveProject({ data: project, filePath, saveAs });
   if (r) { filePath = r.filePath; applySaved(r.data); setDirty(false); toast(project.cloud ? '클라우드 폴더에 저장했어요' : '저장했어요'); return true; }
   return false;
@@ -1996,59 +2145,81 @@ function askText(title, value = '', hint = '') {
   });
 }
 
-/* ---------- 클라우드 이어서 작업 ---------- */
+/* ---------- GitHub에 올리고 다른 PC에서 이어서 작업 ---------- */
+const errMsg = e => String(e && e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+async function applyGithubData(data) {
+  project = data; filePath = null; commit.last = snapshot(); undoStack.length = 0; redoStack.length = 0;
+  await afterLoad(); setDirty(false);
+}
+async function githubSaveNow(name) {
+  const r = await API.githubSave({ name, data: project });
+  applySaved(r); project.ghProject = name; commit.last = snapshot(); setDirty(false);
+  return r;
+}
 async function openCloudDialog() {
-  const roots = await API.cloudRoots();
   const m = document.createElement('div'); m.className = 'modal'; m.id = 'cloudModal';
-  const curName = (filePath ? filePath.split(/[\\/]/).pop().replace(/\.hsproj$/i, '') : '내 프로젝트');
-  m.innerHTML = `<div class="dialog wide-dialog"><h3>☁ 클라우드에 저장하고 다른 PC에서 이어서 하기</h3>
-    <p class="hint">OneDrive·구글 드라이브처럼 PC끼리 자동으로 동기화되는 폴더에 프로젝트와 쓰인 영상·사진·음악을 한 폴더로 모아 저장해요. 다른 PC에서 같은 계정으로 동기화되면 "클라우드에서 열기"로 그대로 이어서 작업할 수 있어요.</p>
-    <div class="cloud-roots"></div>
-    <div class="row" style="justify-content:space-between"><button data-a="other">다른 폴더에 저장…</button><span><button data-a="open">클라우드에서 열기…</button> <button data-a="close">닫기</button></span></div>
-    <p class="hint cloud-status"></p></div>`;
-  const box = m.querySelector('.cloud-roots');
-  if (!roots.length) box.innerHTML = '<p class="hint">이 PC에서 OneDrive나 구글 드라이브 폴더를 찾지 못했어요. 윈도우의 OneDrive에 로그인하거나, "다른 폴더에 저장"으로 동기화되는 폴더를 직접 고르세요.</p>';
-  for (const r of roots) {
-    const row = document.createElement('div'); row.className = 'cloud-row';
-    row.innerHTML = `<div><b></b><div class="hint"></div></div><button class="primary">여기에 저장</button>`;
-    row.querySelector('b').textContent = r.name; row.querySelector('.hint').textContent = r.path;
-    row.querySelector('button').onclick = () => doCloudSave(r.path, m);
-    box.appendChild(row);
-  }
-  const close = () => m.remove();
-  m.querySelector('[data-a="close"]').onclick = close;
-  m.querySelector('[data-a="other"]').onclick = async () => { const p = await API.cloudPickFolder(); if (p) doCloudSave(p, m, true); };
-  m.querySelector('[data-a="open"]').onclick = async () => {
-    if (!(await confirmDiscard())) return;
-    const r = await API.cloudOpen(roots[0] && roots[0].path); if (!r) return;
-    close();
-    project = r.data; filePath = r.filePath; commit.last = snapshot(); undoStack.length = 0; redoStack.length = 0;
-    await afterLoad(); setDirty(false); toast('클라우드 프로젝트를 열었어요');
-  };
+  m.innerHTML = `<div class="dialog wide-dialog"><h3>☁ GitHub에 저장하고 다른 PC에서 이어서 하기</h3><div class="gh-body"></div>
+    <div class="bar gh-bar hidden"><div></div></div><p class="hint cloud-status"></p>
+    <div class="row"><button data-a="close">닫기</button></div></div>`;
   document.body.appendChild(m);
-  m._curName = curName;
-}
-async function doCloudSave(root, m, direct = false) {
-  const name = await askText('프로젝트 이름', m._curName, '이 이름으로 폴더가 만들어져요.');
-  if (!name) return;
-  const safe = name.replace(/[\\/:*?"<>|]/g, '_').trim() || '내 프로젝트';
-  const sep = root.includes('\\') ? '\\' : '/';
-  const dir = direct ? root + sep + safe : root + sep + '하늘 스튜디오' + sep + safe;
-  const target = dir + sep + safe + '.hsproj';
-  const st = m.querySelector('.cloud-status');
-  st.textContent = '파일을 모으는 중…';
-  m.querySelectorAll('button').forEach(b => b.disabled = true);
-  try {
-    const r = await API.cloudSave({ data: project, filePath: target });
-    filePath = r.filePath; applySaved(r.data); setDirty(false);
-    m.remove();
-    toast('클라우드 폴더에 저장했어요. 이제 Ctrl+S로 저장하면 새로 넣은 파일도 같이 모여요.', 5000);
-  } catch (e) {
-    st.textContent = '저장하지 못했어요: ' + e.message;
-    m.querySelectorAll('button').forEach(b => b.disabled = false);
+  m.querySelector('[data-a="close"]').onclick = () => m.remove();
+  const body = m.querySelector('.gh-body'), st = m.querySelector('.cloud-status');
+  const busy = on => { m.querySelectorAll('button, input').forEach(x => x.disabled = on); m.querySelector('.gh-bar').classList.toggle('hidden', !on); };
+  const cfg = await API.githubConfig();
+  if (!cfg) {
+    body.innerHTML = `<p class="hint">처음 한 번만 준비하면 돼요.</p>
+      <ol class="gh-steps">
+        <li><a href="#" data-u="https://github.com/new">새 저장소 만들기</a>를 눌러 이름(예: <b>haneul-projects</b>)을 넣고 <b>Private(비공개)</b>로 만드세요.</li>
+        <li><a href="#" data-u="https://github.com/settings/personal-access-tokens/new">토큰 만들기</a>를 눌러 Repository access에서 방금 만든 저장소만 고르고, Permissions의 <b>Contents</b>를 <b>Read and write</b>로 바꾼 뒤 Generate token을 누르세요.</li>
+        <li>아래에 저장소와 토큰을 붙여 넣고 연결을 누르세요. 다른 PC에서도 같은 저장소·토큰으로 한 번 연결하면 돼요.</li>
+      </ol>
+      <label>저장소<input type="text" id="ghRepo" placeholder="아이디/저장소이름 (예: cheonho1128/haneul-projects)"></label>
+      <label>토큰<input type="password" id="ghToken" placeholder="github_pat_…"></label>
+      <div class="row"><button class="primary" data-a="connect">연결</button></div>`;
+    body.querySelectorAll('a[data-u]').forEach(a => a.onclick = e => { e.preventDefault(); API.openUrl(a.dataset.u); });
+    body.querySelectorAll('input').forEach(i => i.onkeydown = e => e.stopPropagation());
+    body.querySelector('[data-a="connect"]').onclick = async () => {
+      busy(true); st.textContent = '연결 확인 중…';
+      try { const r = await API.githubConnect({ repo: $('#ghRepo').value, token: $('#ghToken').value }); toast(`GitHub ${r.repo}에 연결했어요`); m.remove(); openCloudDialog(); }
+      catch (e) { st.textContent = errMsg(e); busy(false); m.querySelector('.gh-bar').classList.add('hidden'); }
+    };
+    return;
   }
+  body.innerHTML = `<p>연결됨: <b></b> <button data-a="disconnect" class="small">연결 해제</button></p>
+    <div class="cloud-row"><div><b>지금 프로젝트 올리기</b><div class="hint">새로 넣은 영상만 올라가요. 같은 파일은 다시 올리지 않아요.</div></div><button class="primary" data-a="save">GitHub에 저장</button></div>
+    <h4 style="margin:14px 0 6px">GitHub에 있는 프로젝트</h4><div class="gh-list hint">불러오는 중…</div>`;
+  body.querySelector('p b').textContent = cfg.repo;
+  body.querySelector('[data-a="disconnect"]').onclick = async () => { await API.githubDisconnect(); m.remove(); openCloudDialog(); };
+  body.querySelector('[data-a="save"]').onclick = async () => {
+    const name = await askText('GitHub에 저장할 이름', project.ghProject || (filePath ? filePath.split(/[\\/]/).pop().replace(/\.hsproj$/i, '') : '내 프로젝트'), '같은 이름이 있으면 새 내용으로 바뀌어요.');
+    if (!name) return;
+    busy(true);
+    try { await githubSaveNow(name.replace(/[\\/:*?"<>|]/g, '_').trim() || '내 프로젝트'); toast('GitHub에 저장했어요. 다른 PC에서 ☁ 버튼으로 열면 이어서 할 수 있어요.', 5000); m.remove(); }
+    catch (e) { st.textContent = '저장하지 못했어요: ' + errMsg(e); busy(false); }
+  };
+  const list = body.querySelector('.gh-list');
+  try {
+    const items = await API.githubList();
+    list.innerHTML = items.length ? '' : '아직 올린 프로젝트가 없어요.';
+    for (const it of items) {
+      const row = document.createElement('div'); row.className = 'cloud-row';
+      row.innerHTML = `<div><b></b></div><button>열기</button>`;
+      row.querySelector('b').textContent = it.name;
+      row.querySelector('button').onclick = async () => {
+        if (!(await confirmDiscard())) return;
+        busy(true);
+        try { const data = await API.githubOpen(it.name); data.ghProject = it.name; await applyGithubData(data); m.remove(); toast(`'${it.name}'을 열었어요`); }
+        catch (e) { st.textContent = '열지 못했어요: ' + errMsg(e); busy(false); }
+      };
+      list.appendChild(row);
+    }
+  } catch (e) { list.textContent = errMsg(e); }
 }
-API.onCloudProgress(v => { const st = document.querySelector('#cloudModal .cloud-status'); if (st && v.total) st.textContent = v.name ? `파일 복사 중 ${v.done + 1}/${v.total}: ${v.name}` : '저장 중…'; });
+API.onGithubProgress(v => {
+  const m = document.querySelector('#cloudModal'); if (!m) return;
+  m.querySelector('.cloud-status').textContent = v.step || '';
+  const bar = m.querySelector('.gh-bar div'); if (bar) bar.style.width = ((v.ratio || 0) * 100).toFixed(1) + '%';
+});
 async function confirmDiscard() {
   if (!dirty) return true;
   const r = confirm('저장하지 않은 변경 사항이 있어요. 저장할까요?\n(확인 = 저장, 취소 = 저장하지 않고 계속)');
@@ -2106,7 +2277,7 @@ $('#btnExport').onclick = () => {
   const hasIO = project.inPoint != null || project.outPoint != null;
   $('#expRange').checked = hasIO; $('#expRange').disabled = !hasIO;
   $('#expRange').parentElement.title = hasIO ? '' : '타임라인에서 I / O 키로 구간을 먼저 정하세요';
-  updateExpInfo();
+  syncExpFormat(); updateExpInfo();
   $('#exportForm').classList.remove('hidden'); $('#exportProgress').classList.add('hidden');
   $('#modal').classList.remove('hidden');
 };
@@ -2123,18 +2294,31 @@ function updateExpInfo() {
   const s = expSettings(), len = s.range ? s.range.to - s.range.from : projDur();
   const fitNote = (s.w / s.h).toFixed(2) !== (project.width / project.height).toFixed(2) ? ' · 비율이 달라 빈 곳은 검은색으로 채워요' : '';
   $('#expInfo').textContent = `${s.w}×${s.h} · ${s.fps}fps · 길이 ${fmt(len)}${s.range ? ` (${fmt(s.range.from)}~${fmt(s.range.to)})` : ''}${fitNote}`;
+  const f = $('#expFormat').value;
+  if (f === 'png') $('#expInfo').textContent = `${s.w}×${s.h} · 재생헤드 위치(${fmt(playhead)})의 화면을 사진으로 저장해요`;
+  if (f === 'mp3') $('#expInfo').textContent = `소리만 · 길이 ${fmt(len)}`;
+  if (f === 'gif') $('#expInfo').textContent = `가로 최대 720 · 15fps · 길이 ${fmt(len)} (길면 파일이 커져요)`;
 }
-['#expSize', '#expFps', '#expRange'].forEach(q => $(q).addEventListener('change', updateExpInfo));
+['#expSize', '#expFps', '#expRange', '#expFormat'].forEach(q => $(q).addEventListener('change', updateExpInfo));
+function syncExpFormat() {
+  const f = $('#expFormat').value;
+  const show = (sel, on) => { const el = $(sel); const row = el.closest('label'); (row || el).classList.toggle('hidden', !on); };
+  show('#expQuality', f === 'mp4'); show('#expPreset', f === 'mp4'); show('#expFps', f === 'mp4');
+  show('#expSize', f !== 'mp3'); show('#expRange', f !== 'png'); show('#expLoud', f === 'mp4' || f === 'mp3');
+  $('#expGo').textContent = { mp4: 'MP4로 내보내기', gif: 'GIF로 내보내기', mp3: 'MP3로 내보내기', png: '사진으로 저장' }[f];
+}
+$('#expFormat').addEventListener('change', syncExpFormat);
 $('#expCancel').onclick = () => $('#modal').classList.add('hidden');
 let lastExport = null;
 $('#expGo').onclick = async () => {
-  const outPath = await API.chooseExport(); if (!outPath) return;
+  const fmtSel = $('#expFormat').value;
+  const outPath = await API.chooseExport(fmtSel); if (!outPath) return;
   $('#exportForm').classList.add('hidden'); $('#exportProgress').classList.remove('hidden');
   $('#expAbort').classList.remove('hidden'); $('#expDone').classList.add('hidden'); $('#expShow').classList.add('hidden');
   $('#expBar').style.width = '0%'; $('#expStatus').textContent = '내보내는 중… 0%';
   const started = Date.now();
   await ensureProjectFonts();
-  const r = await API.startExport({ project, textPngs: renderTextPngs(), outPath, crf: +$('#expQuality').value, preset: $('#expPreset').value, ...(() => { const s = expSettings(); return { outWidth: s.w !== project.width || s.h !== project.height ? s.w : 0, outHeight: s.w !== project.width || s.h !== project.height ? s.h : 0, outFps: s.fps, range: s.range }; })() });
+  const r = await API.startExport({ project, textPngs: renderTextPngs(), outPath, crf: +$('#expQuality').value, preset: $('#expPreset').value, format: fmtSel, loudnorm: $('#expLoud').checked, ...(() => { const s = expSettings(); return { outWidth: s.w !== project.width || s.h !== project.height ? s.w : 0, outHeight: s.w !== project.width || s.h !== project.height ? s.h : 0, outFps: s.fps, range: fmtSel === 'png' ? { from: Math.min(playhead, Math.max(0, projDur() - 0.05)), to: Math.min(playhead, Math.max(0, projDur() - 0.05)) + 0.04 } : s.range }; })() });
   $('#expAbort').classList.add('hidden'); $('#expDone').classList.remove('hidden');
   if (r.ok) {
     lastExport = r.outPath; $('#expBar').style.width = '100%';
