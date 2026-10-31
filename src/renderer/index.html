@@ -13,6 +13,7 @@
     <button id="btnNew" title="새 프로젝트 (Ctrl+N)">새로 만들기</button>
     <button id="btnOpen" title="프로젝트 열기 (Ctrl+O)">열기</button>
     <button id="btnSave" title="저장 (Ctrl+S)">저장</button>
+    <button id="btnCloud" title="클라우드(OneDrive 등)에 저장하고 다른 PC에서 이어서 작업">☁ 클라우드</button>
     <span class="sep"></span>
     <button id="btnUndo" title="실행 취소 (Ctrl+Z)">↶</button>
     <button id="btnRedo" title="다시 실행 (Ctrl+Y)">↷</button>
@@ -60,9 +61,9 @@
       <p class="hint">템플릿을 클릭하면 재생헤드 위치에 텍스트가 추가됩니다.</p>
       <div id="textPresets"></div>
     </section>
-    <section class="tab hidden" id="tab-effects"><button id="btnAdjust" class="wide primary-outline">＋ 조정 레이어 추가</button><p class="hint">클립을 선택한 뒤 효과를 누르면 적용돼요. 다시 누르면 빠져요.</p><div class="lib-grid" id="libEffects"></div></section>
+    <section class="tab hidden" id="tab-effects"><button id="btnAdjust" class="wide primary-outline">＋ 조정 레이어 추가</button><div id="libEffects"></div></section>
     <section class="tab hidden" id="tab-filters"><p class="hint">선택한 클립에 필터를 입혀요.</p><div class="lib-grid" id="libFilters"></div></section>
-    <section class="tab hidden" id="tab-transitions"><p class="hint">선택한 클립과 바로 앞 클립 사이에 전환을 넣어요.</p><div class="lib-grid" id="libTransitions"></div></section>
+    <section class="tab hidden" id="tab-transitions"><p class="hint">선택한 클립과 바로 앞 클립 사이에 전환을 넣어요.</p><div id="libTransitions"></div></section>
     <section class="tab hidden" id="tab-captions">
       <p class="hint">자막은 텍스트 트랙에 들어갑니다. 재생헤드 위치에서 바로 자막을 입력할 수 있어요.</p>
       <div class="caption-add">

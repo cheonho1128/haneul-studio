@@ -1,7 +1,7 @@
 // FFmpeg 명령 생성기: 프로젝트(JSON)를 ffmpeg 인자 배열로 변환한다.
 'use strict';
 const core = require('./renderer/core.js');
-const { clipDuration, projectDuration, transitionPlan, FILTER_PRESET_FFMPEG, hasColor, curvesFilter, hasKf, kfExpr, kfMax } = core;
+const { clipDuration, projectDuration, transitionPlan, FILTER_PRESET_FFMPEG, hasColor, curvesFilter, hasKf, kfExpr, kfMax, effClip, maskExpr } = core;
 
 function num(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 function f3(v) { return num(v).toFixed(3); }
@@ -60,7 +60,7 @@ function buildExportArgs(project, opts) {
   const visualTracks = project.tracks.filter(t => t.kind !== 'audio').slice().reverse();
   for (const track of visualTracks) {
     const clips = track.clips.slice().sort((a, b) => a.start - b.start);
-    for (const c of clips) {
+    for (let c of clips) {
       const dur = clipDuration(c);
       if (dur <= 0) continue;
       const start = num(c.start);
@@ -126,6 +126,8 @@ function buildExportArgs(project, opts) {
 
       const m = mediaById[c.mediaId];
       if (!m) continue;
+      const c0 = c;
+      c = effClip(c0, tp);
       const speed = num(c.speed, 1);
       const srcLen = num(c.out) - num(c.in);
       const vdur = dur + extend;
@@ -145,6 +147,14 @@ function buildExportArgs(project, opts) {
         const fit = Math.min(W / mw, H / mh) * scale;
         const w = even(mw * fit), h = even(mh * fit);
         const chain = [];
+        let inLbl = `${k}:v`, bn = 0;
+        const branch = fn => {
+          const a = `br${k}_${bn++}`, o = `br${k}_${bn++}`;
+          filters.push(`[${inLbl}]${chain.length ? chain.join(',') : 'null'}[${a}]`);
+          chain.length = 0;
+          filters.push(...fn(a, o, `br${k}_${bn++}`, `br${k}_${bn++}`, `br${k}_${bn++}`, `br${k}_${bn++}`));
+          inLbl = o;
+        };
         if (m.kind !== 'image') chain.push(...(c.reverse ? ['reverse'] : []), `setpts=(PTS-STARTPTS)/${speed.toFixed(4)}`);
         chain.push(`fps=${FPS}`);
         // 모자이크
@@ -176,6 +186,29 @@ function buildExportArgs(project, opts) {
         if (hasEffect(c, 'invert')) chain.push('negate');
         if (hasEffect(c, 'grain')) chain.push(`noise=alls=${Math.round(8 + 40 * effectAmount(c, 'grain'))}:allf=t+u`);
         if (hasEffect(c, 'vignette')) chain.push(`vignette=a=${(0.25 + 0.6 * effectAmount(c, 'vignette')).toFixed(3)}`);
+        const amt = type => effectAmount(c, type);
+        if (hasEffect(c, 'blur')) chain.push(`gblur=sigma=${((2 + 18 * amt('blur')) * w / 1920).toFixed(2)}`);
+        if (hasEffect(c, 'rainbow')) chain.push(`hue=H=2*PI*t*${(0.2 + 0.8 * amt('rainbow')).toFixed(3)}`);
+        if (hasEffect(c, 'posterize')) { const st = Math.round(256 / Math.max(2, Math.round(8 - 6 * amt('posterize')))); const e = `floor(val/${st})*${st}+${Math.floor(st / 2)}`; chain.push(`lutrgb=r='${e}':g='${e}':b='${e}'`); }
+        if (hasEffect(c, 'duotone')) chain.push('colorchannelmixer=rr=0.164:rg=0.323:rb=0.063:gr=0.254:gg=0.499:gb=0.097:br=0.344:bg=0.675:bb=0.131');
+        if (hasEffect(c, 'glow')) {
+          const sg = (6 + 20 * amt('glow')) * w / 1920, op = (0.3 + 0.5 * amt('glow')).toFixed(3);
+          chain.push('format=gbrp');
+          branch((a, o, x1, x2) => [`[${a}]split[${x1}][${x2}]`, `[${x2}]gblur=sigma=${Math.max(1, sg).toFixed(2)}[${x2}b]`, `[${x1}][${x2}b]blend=all_mode=screen:all_opacity=${op}[${o}]`]);
+        }
+        if (hasEffect(c, 'split4')) {
+          const hw = even(w / 2), hh = even(h / 2);
+          chain.push(`scale=${hw}:${hh}`);
+          branch((a, o, x1, x2, x3, x4) => [`[${a}]split=4[${x1}][${x2}][${x3}][${x4}]`, `[${x1}][${x2}]hstack[${x1}t]`, `[${x3}][${x4}]hstack[${x3}t]`, `[${x1}t][${x3}t]vstack,scale=${w}:${h}[${o}]`]);
+        }
+        if (hasEffect(c, 'mirrorSplit')) {
+          const hw = even(w / 2);
+          chain.push(`scale=${hw * 2}:${h}`);
+          branch((a, o, x1, x2) => [`[${a}]crop=${hw}:${h}:0:0,split[${x1}][${x2}]`, `[${x2}]hflip[${x2}f]`, `[${x1}][${x2}f]hstack,scale=${w}:${h}[${o}]`]);
+        }
+        if (hasEffect(c, 'scanlines')) { const sp = Math.max(2, Math.round(4 * H / 1080)), th = Math.max(1, Math.round(sp / 2)); chain.push(`drawgrid=w=${w + 10}:h=${sp}:t=${th}:c=black@${(0.2 + 0.6 * amt('scanlines')).toFixed(2)}`); }
+        if (hasEffect(c, 'strobe')) chain.push(`eq=brightness='0.3*gt(mod(t*${(3 + 9 * amt('strobe')).toFixed(2)},1),0.5)':eval=frame`);
+        if (hasEffect(c, 'letterbox')) { const lb = even(h * (0.06 + 0.1 * amt('letterbox'))); chain.push(`drawbox=x=0:y=0:w=iw:h=${lb}:color=black:t=fill`, `drawbox=x=0:y=ih-${lb}:w=iw:h=${lb}:color=black:t=fill`); }
         if (hasEffect(c, 'flash')) chain.push(`fade=t=in:st=0:d=${f3(0.15 + 0.5 * effectAmount(c, 'flash'))}:c=white`);
         if (tp.whiteIn) chain.push(`fade=t=in:st=0:d=${f3(tp.whiteIn)}:c=white`);
         if (tp.whiteOut) chain.push(`fade=t=out:st=${f3(dur - tp.whiteOut)}:d=${f3(tp.whiteOut)}:c=white`);
@@ -187,6 +220,11 @@ function buildExportArgs(project, opts) {
         if (hasEffect(c, 'rgbSplit')) {
           const px = Math.max(1, Math.round((2 + 18 * effectAmount(c, 'rgbSplit')) * W / 1920));
           chain.push(`rgbashift=rh=-${px}:bh=${px}`);
+        }
+        if (tp.mask) {
+          const D = Math.min(tp.mask.d, dur);
+          const ex = maskExpr(tp.mask.type, D);
+          branch((a, o, x1, x2) => [`[${a}]split[${x1}][${x2}]`, `[${x1}]trim=duration=${f3(D)},geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*${ex}'[${x1}m]`, `[${x2}]trim=start=${f3(D)},setpts=PTS-STARTPTS[${x2}m]`, `[${x1}m][${x2}m]concat=n=2:v=1:a=0[${o}]`]);
         }
         if (hasEffect(c, 'mirror')) chain.push('hflip');
         if (hasEffect(c, 'flipV')) chain.push('vflip');
@@ -202,13 +240,20 @@ function buildExportArgs(project, opts) {
           chain.push(`scale=w='max(2,trunc(iw*${se}/2)*2)':h='max(2,trunc(ih*${se}/2)*2)':eval=frame`);
         }
         chain.push(`setpts=PTS-STARTPTS+${f3(start)}/TB`);
-        filters.push(`[${k}:v]${chain.join(',')}[v${k}]`);
+        filters.push(`[${inLbl}]${chain.join(',') || 'null'}[v${k}]`);
         const lt = `(t-${f3(start)})`;
         let x = `(main_w-overlay_w)/2+${hasKf(c, 'x') ? `(${kfExpr(c, 'x', lt, W)})` : (num(tr.x) * W).toFixed(1)}`;
         let y = `(main_h-overlay_h)/2+${hasKf(c, 'y') ? `(${kfExpr(c, 'y', lt, H)})` : (num(tr.y) * H).toFixed(1)}`;
         if (hasEffect(c, 'shake')) {
           const amp = ((0.004 + 0.03 * effectAmount(c, 'shake')) * W).toFixed(1);
           x += `+${amp}*sin(t*37)`; y += `+${amp}*cos(t*29)`;
+        }
+        if (tp.pushOut) {
+          const e = `(1-${easeExpr(tp.pushOut.at, tp.pushOut.d)})`;
+          if (tp.pushOut.dir === 'left') x += `-main_w*${e}`;
+          if (tp.pushOut.dir === 'right') x += `+main_w*${e}`;
+          if (tp.pushOut.dir === 'up') y += `-main_h*${e}`;
+          if (tp.pushOut.dir === 'down') y += `+main_h*${e}`;
         }
         if (tp.slide) {
           const e = easeExpr(start, tp.slide.d);

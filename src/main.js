@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const { spawn, execFile } = require('child_process');
 const { buildExportArgs } = require('./export');
+const { cloudRoots, resolveProjectPaths, packProject } = require('./projectfiles');
 
 function binPath(p) { return p.replace('app.asar', 'app.asar.unpacked'); }
 const FFMPEG = global.HANEUL ? global.HANEUL.ffmpeg : binPath(require('ffmpeg-static'));
@@ -159,6 +160,27 @@ ipcMain.handle('media:scenes', async (_e, p, from, to) => {
   return out;
 });
 
+
+/* ---------- 클라우드 폴더 (OneDrive·구글 드라이브) 저장 ---------- */
+ipcMain.handle('cloud:roots', () => cloudRoots());
+ipcMain.handle('cloud:pick-folder', async () => {
+  const r = await dialog.showOpenDialog(win, { title: '저장할 폴더 고르기 (동기화되는 폴더)', properties: ['openDirectory', 'createDirectory'] });
+  return r.canceled ? null : r.filePaths[0];
+});
+ipcMain.handle('cloud:open', async (_e, root) => {
+  const def = root && fs.existsSync(path.join(root, '하늘 스튜디오')) ? path.join(root, '하늘 스튜디오') : root;
+  const r = await dialog.showOpenDialog(win, { title: '클라우드에서 프로젝트 열기', defaultPath: def || undefined, properties: ['openFile'], filters: [{ name: '하늘 스튜디오 프로젝트', extensions: ['hsproj'] }] });
+  if (r.canceled) return null;
+  return { filePath: r.filePaths[0], data: resolveProjectPaths(JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8')), r.filePaths[0]) };
+});
+ipcMain.handle('cloud:save', async (_e, { data, filePath }) => {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  data.cloud = true;
+  await packProject(data, filePath, true, v => win && win.webContents.send('cloud:progress', v));
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 1), 'utf8');
+  return { filePath, data };
+});
+
 // 정지 화면용 프레임 추출
 ipcMain.handle('media:frame', async (_e, p, t) => {
   const out = path.join(cacheDir(), `freeze_${Date.now()}.png`);
@@ -167,20 +189,22 @@ ipcMain.handle('media:frame', async (_e, p, t) => {
 });
 
 ipcMain.handle('project:save', async (_e, { data, filePath, saveAs }) => {
+  const wasCloud = !!data.cloud;
   let p = filePath;
   if (!p || saveAs) {
     const r = await dialog.showSaveDialog(win, { title: '프로젝트 저장', defaultPath: '내 프로젝트.hsproj', filters: [{ name: '하늘 스튜디오 프로젝트', extensions: ['hsproj'] }] });
     if (r.canceled) return null;
     p = r.filePath;
   }
+  await packProject(data, p, wasCloud);
   fs.writeFileSync(p, JSON.stringify(data, null, 1), 'utf8');
-  return p;
+  return { filePath: p, data };
 });
 
 ipcMain.handle('project:open', async () => {
   const r = await dialog.showOpenDialog(win, { title: '프로젝트 열기', properties: ['openFile'], filters: [{ name: '하늘 스튜디오 프로젝트', extensions: ['hsproj'] }] });
   if (r.canceled) return null;
-  return { filePath: r.filePaths[0], data: JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8')) };
+  return { filePath: r.filePaths[0], data: resolveProjectPaths(JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8')), r.filePaths[0]) };
 });
 
 ipcMain.handle('lut:open', async () => {

@@ -428,7 +428,7 @@ function tinted(src, color, idx) {
   g.globalCompositeOperation = 'source-over';
   return c;
 }
-const COMPLEX_FX = ['zoomIn', 'zoomOut', 'pixelate', 'rgbSplit', 'grain', 'vignette', 'flash'];
+const COMPLEX_FX = ['zoomIn', 'zoomOut', 'pixelate', 'rgbSplit', 'grain', 'vignette', 'flash', 'posterize', 'duotone', 'glow', 'split4', 'mirrorSplit', 'scanlines', 'strobe', 'letterbox'];
 const toneCache = new Map();
 function toneFor(col) {
   const key = Core.COLOR_KEYS.map(k => col[k] || 0).join(',');
@@ -479,16 +479,27 @@ function drawMediaClip(src, c, m, W, H, t, local, dur, tp, alpha) {
   const vdur = dur + (tp.extend || 0);
   let x = W / 2 + tf.x * W, y = H / 2 + tf.y * H;
   if (hasFx(c, 'shake')) { const amp = (0.004 + 0.03 * fxAmt(c, 'shake')) * W; x += amp * Math.sin(t * 37); y += amp * Math.cos(t * 29); }
+  if (tp.pushOut) {
+    const p = clamp((t - tp.pushOut.at) / tp.pushOut.d, 0, 1), o = 1 - (1 - p) * (1 - p);
+    if (tp.pushOut.dir === 'left') x -= W * o; if (tp.pushOut.dir === 'right') x += W * o;
+    if (tp.pushOut.dir === 'up') y -= H * o; if (tp.pushOut.dir === 'down') y += H * o;
+  }
   if (tp.slide) {
     const p = clamp((t - c.start) / tp.slide.d, 0, 1), e = (1 - p) * (1 - p);
     if (tp.slide.dir === 'left') x += W * e; if (tp.slide.dir === 'right') x -= W * e;
     if (tp.slide.dir === 'up') y += H * e; if (tp.slide.dir === 'down') y -= H * e;
   }
-  const css = filterCss(c.filter, c);
+  let css = filterCss(c.filter, c);
+  const extraCss = [];
+  const cs = W / project.width;   // 캔버스 픽셀 / 내보내기 픽셀
+  if (hasFx(c, 'blur')) extraCss.push(`blur(${((2 + 18 * fxAmt(c, 'blur')) * (dw / cs) / 1920 * cs).toFixed(2)}px)`);
+  if (hasFx(c, 'rainbow')) extraCss.push(`hue-rotate(${((local * (0.2 + 0.8 * fxAmt(c, 'rainbow')) * 360) % 360).toFixed(1)}deg)`);
+  if (extraCss.length) css = (css === 'none' ? '' : css + ' ') + extraCss.join(' ');
+  const maskOn = tp.mask && local < tp.mask.d;
   const colorOn = c.color && Core.hasColor(c.color);
   const lut = c.color && c.color.lut && c.color.lut.path ? lutCache.get(c.color.lut.path) : null;
   if (c.color && c.color.lut && c.color.lut.path && !lutCache.has(c.color.lut.path)) getLut(c.color.lut);
-  const complex = (c.effects || []).some(e => COMPLEX_FX.includes(e.type)) || (c.chroma && c.chroma.on) || tp.whiteIn || tp.whiteOut || colorOn || lut;
+  const complex = (c.effects || []).some(e => COMPLEX_FX.includes(e.type)) || (c.chroma && c.chroma.on) || tp.whiteIn || tp.whiteOut || colorOn || lut || maskOn;
   let img = src, iw = dw, ih = dh;
   if (complex) {
     const fx = fxCanvas(0, dw, dh), g = fx.getContext('2d');
@@ -529,6 +540,31 @@ function drawMediaClip(src, c, m, W, H, t, local, dur, tp, alpha) {
       g.drawImage(r, -px, 0); g.drawImage(gr, 0, 0); g.drawImage(b, px, 0);
       g.globalCompositeOperation = 'source-over';
     }
+    if (hasFx(c, 'posterize') || hasFx(c, 'duotone')) {
+      const d = g.getImageData(0, 0, fx.width, fx.height), p = d.data;
+      const st = Math.round(256 / Math.max(2, Math.round(8 - 6 * fxAmt(c, 'posterize')))), hs = Math.floor(st / 2);
+      const post = hasFx(c, 'posterize'), duo = hasFx(c, 'duotone');
+      for (let i = 0; i < p.length; i += 4) {
+        if (post) { p[i] = Math.floor(p[i] / st) * st + hs; p[i + 1] = Math.floor(p[i + 1] / st) * st + hs; p[i + 2] = Math.floor(p[i + 2] / st) * st + hs; }
+        if (duo) { const l = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2]; p[i] = l * 0.55; p[i + 1] = l * 0.85; p[i + 2] = l * 1.15; }
+      }
+      g.putImageData(d, 0, 0);
+    }
+    if (hasFx(c, 'glow')) {
+      const gl = fxCanvas(5, fx.width, fx.height), gg = gl.getContext('2d');
+      gg.clearRect(0, 0, gl.width, gl.height);
+      gg.filter = `blur(${Math.max(1, (6 + 20 * fxAmt(c, 'glow')) * fx.width / 1920).toFixed(2)}px)`; gg.drawImage(fx, 0, 0); gg.filter = 'none';
+      g.globalCompositeOperation = 'screen'; g.globalAlpha = 0.3 + 0.5 * fxAmt(c, 'glow'); g.drawImage(gl, 0, 0);
+      g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    }
+    if (hasFx(c, 'split4') || hasFx(c, 'mirrorSplit')) {
+      const cp = fxCanvas(6, fx.width, fx.height), cg = cp.getContext('2d');
+      cg.clearRect(0, 0, cp.width, cp.height); cg.drawImage(fx, 0, 0);
+      g.clearRect(0, 0, fx.width, fx.height);
+      const hw = fx.width / 2, hh = fx.height / 2;
+      if (hasFx(c, 'split4')) { for (const [ax, ay] of [[0, 0], [hw, 0], [0, hh], [hw, hh]]) g.drawImage(cp, ax, ay, hw, hh); }
+      else { g.drawImage(cp, 0, 0, hw, fx.height, 0, 0, hw, fx.height); g.save(); g.translate(fx.width, 0); g.scale(-1, 1); g.drawImage(cp, 0, 0, hw, fx.height, 0, 0, hw, fx.height); g.restore(); }
+    }
     g.globalCompositeOperation = 'source-atop';
     if (hasFx(c, 'grain')) {
       g.globalAlpha = 0.05 + 0.2 * fxAmt(c, 'grain');
@@ -547,7 +583,25 @@ function drawMediaClip(src, c, m, W, H, t, local, dur, tp, alpha) {
     if (tp.whiteIn && local < tp.whiteIn) white = Math.max(white, 1 - local / tp.whiteIn);
     if (tp.whiteOut && local > dur - tp.whiteOut) white = Math.max(white, Math.min(1, (local - (dur - tp.whiteOut)) / tp.whiteOut));
     if (white > 0) { g.globalAlpha = white; g.fillStyle = '#fff'; g.fillRect(0, 0, fx.width, fx.height); g.globalAlpha = 1; }
+    if (hasFx(c, 'scanlines')) {
+      const k = fx.height / (dh / cs);      // 클립 픽셀당 캔버스 픽셀
+      const sp = Math.max(2, Math.round(4 * project.height / 1080)), th = Math.max(1, Math.round(sp / 2));
+      g.fillStyle = `rgba(0,0,0,${0.2 + 0.6 * fxAmt(c, 'scanlines')})`;
+      for (let yy = 0; yy < fx.height; yy += sp * k) g.fillRect(0, yy, fx.width, th * k);
+    }
+    if (hasFx(c, 'strobe') && ((local * (3 + 9 * fxAmt(c, 'strobe'))) % 1) > 0.5) {
+      g.globalCompositeOperation = 'lighter'; g.fillStyle = 'rgb(76,76,76)'; g.fillRect(0, 0, fx.width, fx.height); g.globalCompositeOperation = 'source-atop';
+    }
     g.globalCompositeOperation = 'source-over';
+    if (hasFx(c, 'letterbox')) { const lb = fx.height * (0.06 + 0.1 * fxAmt(c, 'letterbox')); g.fillStyle = '#000'; g.fillRect(0, 0, fx.width, lb); g.fillRect(0, fx.height - lb, fx.width, lb); }
+    if (maskOn) {
+      const mw = 192, mh = Math.max(8, Math.round(192 * fx.height / fx.width));
+      const mk = fxCanvas(7, mw, mh), mg = mk.getContext('2d');
+      const md = mg.createImageData(mw, mh), mp = md.data, asp = fx.width / fx.height, pr = local / tp.mask.d;
+      for (let yy = 0; yy < mh; yy++) for (let xx = 0; xx < mw; xx++) mp[(yy * mw + xx) * 4 + 3] = 255 * Core.maskAlpha(tp.mask.type, (xx + 0.5) / mw, (yy + 0.5) / mh, asp, pr);
+      mg.putImageData(md, 0, 0);
+      g.globalCompositeOperation = 'destination-in'; g.drawImage(mk, 0, 0, fx.width, fx.height); g.globalCompositeOperation = 'source-over';
+    }
     img = fx;
   }
   ctx.save();
@@ -597,7 +651,8 @@ function draw() {
         continue;
       }
       const m = mediaOf(c); if (!m) continue;
-      const a = fadeAlpha(c, local, dur, tp);
+      const ce = Core.effClip(c, tp);
+      const a = fadeAlpha(ce, local, dur, tp);
       let src;
       if (m.kind === 'image') src = getImg(m);
       else {
@@ -606,7 +661,7 @@ function draw() {
       }
       if (tr.hidden) continue;
       if ((src.tagName === 'VIDEO' && src.readyState < 2) || (src.tagName === 'IMG' && !src.complete)) continue;
-      drawMediaClip(src, c, m, W, H, t, local, dur, tp, a);
+      drawMediaClip(src, ce, m, W, H, t, local, dur, tp, a);
     }
   }
   for (const el of videoEls.values()) if (!activeEls.has(el) && !el.paused) el.pause();
@@ -647,7 +702,8 @@ function drawSelection(c, W, H, s) {
 
 function syncMedia(el, c, t, muted, volFade) {
   const local = t - c.start;
-  const srcT = c.reverse ? Math.max(c.in, c.out - local * (c.speed || 1)) : c.in + local * (c.speed || 1);
+  let srcT = c.reverse ? Math.max(c.in, c.out - local * (c.speed || 1)) : c.in + local * (c.speed || 1);
+  if (Number.isFinite(el.duration) && el.duration > 0) srcT = Math.min(srcT, el.duration - 0.05);   // 전환으로 늘어난 부분은 마지막 장면 유지
   el.muted = !!muted || !!c.reverse;
   el.volume = clamp(Core.kfValue(c, 'volume', Math.min(local, clipDur(c))) * volFade, 0, 1);
   if (playing && c.reverse) {
@@ -668,6 +724,7 @@ function syncMedia(el, c, t, muted, volFade) {
 function tick() {
   if (!playing) return;
   playhead = playStartT + (performance.now() - playStartWall) / 1000;
+  if (hoverPv && playhead >= hoverPv.to) { playhead = hoverPv.from; playStartT = playhead; playStartWall = performance.now(); }
   const end = projDur();
   if (playhead >= end) { playhead = end; setPlaying(false); }
   draw(); updatePlayhead(true);
@@ -746,7 +803,7 @@ function renderTimeline() {
       <button class="${tr.locked ? 'off' : ''}" data-a="lock" title="트랙 잠금">${tr.locked ? '🔒' : '🔓'}</button>
       <button data-a="up" title="위로">▲</button><button data-a="del" title="트랙 삭제">✕</button>`;
     head.querySelector('.nm').append(tr.name);
-    head.querySelector('.nm').ondblclick = () => { const n = prompt('트랙 이름', tr.name); if (n) { tr.name = n; commit(); renderTimeline(); } };
+    head.querySelector('.nm').ondblclick = async () => { const n = await askText('트랙 이름', tr.name); if (n) { tr.name = n; commit(); renderTimeline(); } };
     head.onclick = e => {
       const a = e.target.dataset.a; if (!a) return;
       if (a === 'hide') tr.hidden = !tr.hidden;
@@ -1130,7 +1187,7 @@ function renderMarkers() {
     d.addEventListener('contextmenu', e => {
       e.preventDefault(); e.stopPropagation();
       showMenu(e.clientX, e.clientY, [
-        { label: '이름 바꾸기', action: () => { const n = prompt('마커 이름', mk.label); if (n !== null) { mk.label = n; commit(); renderMarkers(); } } },
+        { label: '이름 바꾸기', action: async () => { const n = await askText('마커 이름', mk.label); if (n !== null) { mk.label = n; commit(); renderMarkers(); } } },
         { label: '색 바꾸기', action: () => { mk.color = MARK_COLORS[(MARK_COLORS.indexOf(mk.color) + 1) % MARK_COLORS.length]; commit(); renderMarkers(); } },
         { label: '마커 삭제', action: () => { project.markers = project.markers.filter(x => x !== mk); commit(); renderMarkers(); } },
         { label: '모든 마커 삭제', action: () => { project.markers = []; commit(); renderMarkers(); } },
@@ -1512,28 +1569,20 @@ function renderPropsInner() {
   if (m.kind !== 'audio') {
     const ge = group('효과');
     c.effects = c.effects || [];
-    const pal = document.createElement('div'); pal.className = 'chips';
-    Core.EFFECTS.forEach(fx => {
-      const on = c.effects.some(e => e.type === fx.type);
-      const b = document.createElement('button'); b.className = 'fx-chip' + (on ? ' on' : ''); b.title = fx.hint;
-      b.innerHTML = `<span>${fx.icon}</span>${fx.name}`;
-      b.onclick = () => {
-        if (on) c.effects = c.effects.filter(e => e.type !== fx.type);
-        else {
-          if (fx.type === 'zoomIn') c.effects = c.effects.filter(e => e.type !== 'zoomOut');
-          if (fx.type === 'zoomOut') c.effects = c.effects.filter(e => e.type !== 'zoomIn');
-          c.effects.push({ type: fx.type, amount: 50 });
-        }
-        live(); done(); renderProps();
-      };
-      pal.appendChild(b);
-    });
-    ge.appendChild(pal);
-    const NO_AMOUNT = ['invert', 'mirror', 'flipV'];
-    c.effects.filter(e => !NO_AMOUNT.includes(e.type)).forEach(e => {
-      const def = Core.EFFECTS.find(x => x.type === e.type);
-      slider(ge, def ? def.name : e.type, () => e.amount ?? 50, v => e.amount = v, 0, 100, 1);
-    });
+    if (c.effects.length) {
+      const al = document.createElement('div'); al.className = 'applied-fx';
+      c.effects.forEach(e => {
+        const def = Core.EFFECTS.find(x => x.type === e.type);
+        const row = document.createElement('div'); row.className = 'applied-row';
+        const nm = document.createElement('b'); nm.textContent = (def ? def.icon + ' ' + def.name : e.type);
+        const del = document.createElement('button'); del.textContent = '✕'; del.title = '효과 빼기';
+        del.onclick = () => { c.effects = c.effects.filter(x => x !== e); live(); done(); renderProps(); };
+        row.append(nm, del); al.appendChild(row);
+        if (!Core.NO_AMOUNT_FX.includes(e.type)) slider(al, '세기', () => e.amount ?? 50, v => e.amount = v, 0, 100, 1);
+      });
+      ge.appendChild(al);
+    }
+    ge.appendChild(fxGrid('effect', () => c, type => toggleEffect(c, type)));
 
     if (m.kind !== 'adjust') {
     const gk = group('크로마키 (배경색 지우기)');
@@ -1553,13 +1602,15 @@ function renderPropsInner() {
     if (m.kind !== 'adjust') {
     const gtr = group('전환 (앞 클립에서 넘어올 때)'); gtr.classList.add('trans-group');
     c.transitionIn = c.transitionIn || { type: 'none', duration: 0.5 };
-    const tchips = document.createElement('div'); tchips.className = 'chips';
-    Core.TRANSITIONS.forEach(tt => {
-      const b = document.createElement('button'); b.textContent = tt.name; b.className = c.transitionIn.type === tt.type ? 'on' : '';
-      b.onclick = () => { c.transitionIn.type = tt.type; seek(Math.max(0, c.start - 0.6)); done(); renderProps(); if (tt.type !== 'none') setPlaying(true); };
-      tchips.appendChild(b);
-    });
-    gtr.appendChild(tchips);
+    if (c.transitionIn.type !== 'none') {
+      const cur = Core.TRANSITIONS.find(x => x.type === c.transitionIn.type);
+      const row = document.createElement('div'); row.className = 'applied-row';
+      const nm = document.createElement('b'); nm.textContent = '적용됨: ' + (cur ? cur.name : c.transitionIn.type);
+      const del = document.createElement('button'); del.textContent = '✕'; del.title = '전환 없애기';
+      del.onclick = () => { c.transitionIn.type = 'none'; done(); renderProps(); requestDraw(); };
+      row.append(nm, del); gtr.appendChild(row);
+    }
+    gtr.appendChild(fxGrid('transition', () => c, type => setTransition(c, type)));
     if (c.transitionIn.type !== 'none') slider(gtr, '길이(초)', () => c.transitionIn.duration, v => c.transitionIn.duration = v, 0.1, 3, 0.1);
     const tp = document.createElement('p'); tp.className = 'hint';
     tp.textContent = '같은 트랙에서 바로 앞에 붙어 있는 클립과 이어지는 효과예요. 타임라인의 클립 사이 + 버튼으로도 넣을 수 있어요.';
@@ -1727,22 +1778,92 @@ function selectedMediaClip() {
   if (!sel || sel.clip.type === 'text' || sel.clip.type === 'adjust' || sel.track.kind === 'audio') { toast('먼저 타임라인에서 영상이나 사진 클립을 선택하세요'); return null; }
   return sel;
 }
+/* ---------- 효과·전환 미리보기 목록 ---------- */
+let hoverPv = null;
+const fxCat = { effect: '전체', transition: '전체' };
+function startHoverPreview(kind, type, c) {
+  stopHoverPreview();
+  if (!c || c.type === 'text' || c.type === 'adjust' && kind === 'transition') return;
+  const backup = { effects: JSON.stringify(c.effects || []), transitionIn: JSON.stringify(c.transitionIn || null) };
+  if (kind === 'effect') {
+    c.effects = (c.effects || []).filter(e => e.type !== type);
+    if (type === 'zoomIn' || type === 'zoomOut') c.effects = c.effects.filter(e => e.type !== 'zoomIn' && e.type !== 'zoomOut');
+    c.effects.push({ type, amount: 50 });
+  } else c.transitionIn = { type, duration: (c.transitionIn && c.transitionIn.type !== 'none' && c.transitionIn.duration) || 0.5 };
+  const d = kind === 'effect' ? 0 : c.transitionIn.duration;
+  const from = kind === 'effect' ? c.start : Math.max(0, c.start - 0.8);
+  const to = kind === 'effect' ? Math.min(clipEnd(c), c.start + 3) : Math.min(clipEnd(c), c.start + d + 0.8);
+  hoverPv = { clip: c, backup, from, to: Math.max(to, from + 0.3), oldT: playhead };
+  seek(from); setPlaying(true);
+}
+function stopHoverPreview() {
+  if (!hoverPv) return;
+  const h = hoverPv; hoverPv = null;
+  h.clip.effects = JSON.parse(h.backup.effects);
+  const tr = JSON.parse(h.backup.transitionIn); if (tr) h.clip.transitionIn = tr; else delete h.clip.transitionIn;
+  setPlaying(false); seek(h.oldT); requestDraw();
+}
+function toggleEffect(c, type) {
+  c.effects = c.effects || [];
+  if (c.effects.some(x => x.type === type)) c.effects = c.effects.filter(x => x.type !== type);
+  else {
+    if (type === 'zoomIn' || type === 'zoomOut') c.effects = c.effects.filter(x => x.type !== 'zoomIn' && x.type !== 'zoomOut');
+    if (type === 'swing' || type === 'spin') c.effects = c.effects.filter(x => x.type !== 'swing' && x.type !== 'spin');
+    c.effects.push({ type, amount: 50 });
+  }
+}
+function setTransition(c, type) {
+  c.transitionIn = { type, duration: (c.transitionIn && c.transitionIn.duration) || 0.5 };
+}
+/** 분류 + 움직이는 미리보기 칸 목록. getClip: 적용할 클립, apply: 눌렀을 때 */
+function fxGrid(kind, getClip, apply) {
+  const wrap = document.createElement('div'); wrap.className = 'fx-browser';
+  const items = kind === 'effect' ? Core.EFFECTS : Core.TRANSITIONS;
+  const cats = ['전체', ...(kind === 'effect' ? Core.EFFECT_CATS : Core.TRANSITION_CATS)];
+  const bar = document.createElement('div'); bar.className = 'fx-cats';
+  const grid = document.createElement('div'); grid.className = 'fx-grid';
+  const hint = document.createElement('p'); hint.className = 'hint';
+  hint.textContent = '마우스를 올리면 선택한 클립에 미리 보여 주고, 누르면 적용돼요.';
+  const fill = () => {
+    grid.innerHTML = '';
+    const c = getClip();
+    items.filter(it => fxCat[kind] === '전체' || it.cat === fxCat[kind]).forEach(it => {
+      const type = it.type;
+      const on = c && (kind === 'effect' ? (c.effects || []).some(e => e.type === type) : c.transitionIn && c.transitionIn.type === type && type !== 'none');
+      const el = document.createElement('div'); el.className = 'fx-tile' + (on ? ' on' : ''); el.title = it.hint || it.name;
+      const cv = FxPreview.canvas(kind, type);
+      const nm = document.createElement('span'); nm.textContent = it.name;
+      el.append(cv, nm);
+      el.onmouseenter = () => { FxPreview.play(cv, true); const cc = getClip(); if (cc && type !== 'none') startHoverPreview(kind, type, cc); };
+      el.onmouseleave = () => { FxPreview.play(cv, false); stopHoverPreview(); };
+      el.onclick = () => {
+        const cc = getClip();
+        if (!cc) { toast('먼저 타임라인에서 클립을 선택하세요'); return; }
+        stopHoverPreview();
+        apply(type);
+        commit(); renderTimeline(); requestDraw(); renderProps();
+        const def = items.find(x => x.type === type);
+        toast(kind === 'effect' ? `${def.name} ${(cc.effects || []).some(e => e.type === type) ? '적용' : '해제'}` : `전환: ${def.name}`);
+      };
+      grid.appendChild(el);
+    });
+  };
+  cats.forEach(ct => {
+    const b = document.createElement('button'); b.textContent = ct; b.className = fxCat[kind] === ct ? 'on' : '';
+    b.onclick = () => { fxCat[kind] = ct; bar.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); fill(); };
+    bar.appendChild(b);
+  });
+  fill();
+  wrap.append(bar, hint, grid);
+  return wrap;
+}
+
 function renderLibraries() {
   const sel = selectedId && findClip(selectedId);
   const c = sel && sel.clip.type !== 'text' ? sel.clip : null;
+  const libClip = () => { const s2 = selectedId && findClip(selectedId); return s2 && s2.clip.type !== 'text' && !(mediaOf(s2.clip) && mediaOf(s2.clip).kind === 'audio') ? s2.clip : null; };
   const fx = $('#libEffects'); fx.innerHTML = '';
-  Core.EFFECTS.forEach(e => {
-    const el = document.createElement('div'); el.className = 'lib-item' + (c && (c.effects || []).some(x => x.type === e.type) ? ' on' : '');
-    el.classList.add('has-prev'); el.appendChild(FxPreview.canvas('effect', e.type)); el.insertAdjacentHTML('beforeend', `<span>${e.name}</span>`); el.title = e.hint;
-    el.onclick = () => {
-      const s = selectedMediaClip(); if (!s) return;
-      const cl = s.clip; cl.effects = cl.effects || [];
-      if (cl.effects.some(x => x.type === e.type)) cl.effects = cl.effects.filter(x => x.type !== e.type);
-      else { if (e.type === 'zoomIn' || e.type === 'zoomOut') cl.effects = cl.effects.filter(x => x.type !== 'zoomIn' && x.type !== 'zoomOut'); cl.effects.push({ type: e.type, amount: 50 }); }
-      commit(); renderTimeline(); requestDraw(); propTab[$('#propTitle').textContent] = 'effects'; renderProps(); renderLibraries();
-    };
-    fx.appendChild(el);
-  });
+  fx.appendChild(fxGrid('effect', libClip, type => toggleEffect(libClip(), type)));
   const fl = $('#libFilters'); fl.innerHTML = '';
   FILTERS.forEach(f => {
     const el = document.createElement('div'); el.className = 'lib-item' + (c && c.filter && c.filter.preset === f.id ? ' on' : '');
@@ -1751,17 +1872,7 @@ function renderLibraries() {
     fl.appendChild(el);
   });
   const tl = $('#libTransitions'); tl.innerHTML = '';
-  Core.TRANSITIONS.forEach(t => {
-    const el = document.createElement('div'); el.className = 'lib-item' + (c && c.transitionIn && c.transitionIn.type === t.type ? ' on' : '');
-    el.classList.add('has-prev'); el.appendChild(FxPreview.canvas('transition', t.type)); el.insertAdjacentHTML('beforeend', `<span>${t.name}</span>`);
-    el.onclick = () => {
-      const s = selectedMediaClip(); if (!s) return;
-      s.clip.transitionIn = { type: t.type, duration: (s.clip.transitionIn && s.clip.transitionIn.duration) || 0.5 };
-      commit(); renderTimeline(); renderProps(); renderLibraries();
-      if (t.type !== 'none') { seek(Math.max(0, s.clip.start - 0.6)); setPlaying(true); }
-    };
-    tl.appendChild(el);
-  });
+  tl.appendChild(fxGrid('transition', () => { const c2 = libClip(); return c2 && c2.type !== 'adjust' ? c2 : null; }, type => setTransition(libClip(), type)));
 }
 
 function renderTextPresets() {
@@ -1854,11 +1965,90 @@ async function afterLoad(resetView = true) {
 }
 function renderAll() { renderMedia(); renderTimeline(); renderProps(); renderCaptions(); requestDraw(); }
 
+/** 저장 후 바뀐 파일 위치(클라우드 폴더로 복사 등)를 지금 프로젝트에 반영 */
+function applySaved(data) {
+  const byId = Object.fromEntries((data.media || []).map(m => [m.id, m]));
+  for (const m of project.media) { const n = byId[m.id]; if (n) { m.path = n.path; if (n.rel) m.rel = n.rel; else delete m.rel; } }
+  const clipById = {};
+  for (const t of data.tracks || []) for (const c of t.clips || []) clipById[c.id] = c;
+  for (const t of project.tracks) for (const c of t.clips) { const n = clipById[c.id]; if (n && n.color && n.color.lut && c.color && c.color.lut) { c.color.lut.path = n.color.lut.path; c.color.lut.rel = n.color.lut.rel; } }
+  if (data.cloud) project.cloud = true;
+  commit.last = snapshot();
+}
 async function save(saveAs = false) {
-  const p = await API.saveProject({ data: project, filePath, saveAs });
-  if (p) { filePath = p; setDirty(false); toast('저장했어요'); return true; }
+  const r = await API.saveProject({ data: project, filePath, saveAs });
+  if (r) { filePath = r.filePath; applySaved(r.data); setDirty(false); toast(project.cloud ? '클라우드 폴더에 저장했어요' : '저장했어요'); return true; }
   return false;
 }
+
+/* ---------- 글자 입력 창 (Electron은 prompt를 지원하지 않음) ---------- */
+function askText(title, value = '', hint = '') {
+  return new Promise(resolve => {
+    const m = document.createElement('div'); m.className = 'modal';
+    m.innerHTML = `<div class="dialog"><h3></h3><p class="hint"></p><input type="text" class="ask-input"><div class="row"><button data-a="no">취소</button><button data-a="ok" class="primary">확인</button></div></div>`;
+    m.querySelector('h3').textContent = title; m.querySelector('.hint').textContent = hint;
+    const inp = m.querySelector('input'); inp.value = value;
+    const end = v => { m.remove(); resolve(v); };
+    m.querySelector('[data-a="ok"]').onclick = () => end(inp.value);
+    m.querySelector('[data-a="no"]').onclick = () => end(null);
+    inp.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') end(inp.value); if (e.key === 'Escape') end(null); };
+    document.body.appendChild(m); inp.focus(); inp.select();
+  });
+}
+
+/* ---------- 클라우드 이어서 작업 ---------- */
+async function openCloudDialog() {
+  const roots = await API.cloudRoots();
+  const m = document.createElement('div'); m.className = 'modal'; m.id = 'cloudModal';
+  const curName = (filePath ? filePath.split(/[\\/]/).pop().replace(/\.hsproj$/i, '') : '내 프로젝트');
+  m.innerHTML = `<div class="dialog wide-dialog"><h3>☁ 클라우드에 저장하고 다른 PC에서 이어서 하기</h3>
+    <p class="hint">OneDrive·구글 드라이브처럼 PC끼리 자동으로 동기화되는 폴더에 프로젝트와 쓰인 영상·사진·음악을 한 폴더로 모아 저장해요. 다른 PC에서 같은 계정으로 동기화되면 "클라우드에서 열기"로 그대로 이어서 작업할 수 있어요.</p>
+    <div class="cloud-roots"></div>
+    <div class="row" style="justify-content:space-between"><button data-a="other">다른 폴더에 저장…</button><span><button data-a="open">클라우드에서 열기…</button> <button data-a="close">닫기</button></span></div>
+    <p class="hint cloud-status"></p></div>`;
+  const box = m.querySelector('.cloud-roots');
+  if (!roots.length) box.innerHTML = '<p class="hint">이 PC에서 OneDrive나 구글 드라이브 폴더를 찾지 못했어요. 윈도우의 OneDrive에 로그인하거나, "다른 폴더에 저장"으로 동기화되는 폴더를 직접 고르세요.</p>';
+  for (const r of roots) {
+    const row = document.createElement('div'); row.className = 'cloud-row';
+    row.innerHTML = `<div><b></b><div class="hint"></div></div><button class="primary">여기에 저장</button>`;
+    row.querySelector('b').textContent = r.name; row.querySelector('.hint').textContent = r.path;
+    row.querySelector('button').onclick = () => doCloudSave(r.path, m);
+    box.appendChild(row);
+  }
+  const close = () => m.remove();
+  m.querySelector('[data-a="close"]').onclick = close;
+  m.querySelector('[data-a="other"]').onclick = async () => { const p = await API.cloudPickFolder(); if (p) doCloudSave(p, m, true); };
+  m.querySelector('[data-a="open"]').onclick = async () => {
+    if (!(await confirmDiscard())) return;
+    const r = await API.cloudOpen(roots[0] && roots[0].path); if (!r) return;
+    close();
+    project = r.data; filePath = r.filePath; commit.last = snapshot(); undoStack.length = 0; redoStack.length = 0;
+    await afterLoad(); setDirty(false); toast('클라우드 프로젝트를 열었어요');
+  };
+  document.body.appendChild(m);
+  m._curName = curName;
+}
+async function doCloudSave(root, m, direct = false) {
+  const name = await askText('프로젝트 이름', m._curName, '이 이름으로 폴더가 만들어져요.');
+  if (!name) return;
+  const safe = name.replace(/[\\/:*?"<>|]/g, '_').trim() || '내 프로젝트';
+  const sep = root.includes('\\') ? '\\' : '/';
+  const dir = direct ? root + sep + safe : root + sep + '하늘 스튜디오' + sep + safe;
+  const target = dir + sep + safe + '.hsproj';
+  const st = m.querySelector('.cloud-status');
+  st.textContent = '파일을 모으는 중…';
+  m.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {
+    const r = await API.cloudSave({ data: project, filePath: target });
+    filePath = r.filePath; applySaved(r.data); setDirty(false);
+    m.remove();
+    toast('클라우드 폴더에 저장했어요. 이제 Ctrl+S로 저장하면 새로 넣은 파일도 같이 모여요.', 5000);
+  } catch (e) {
+    st.textContent = '저장하지 못했어요: ' + e.message;
+    m.querySelectorAll('button').forEach(b => b.disabled = false);
+  }
+}
+API.onCloudProgress(v => { const st = document.querySelector('#cloudModal .cloud-status'); if (st && v.total) st.textContent = v.name ? `파일 복사 중 ${v.done + 1}/${v.total}: ${v.name}` : '저장 중…'; });
 async function confirmDiscard() {
   if (!dirty) return true;
   const r = confirm('저장하지 않은 변경 사항이 있어요. 저장할까요?\n(확인 = 저장, 취소 = 저장하지 않고 계속)');
@@ -1873,6 +2063,7 @@ $('#btnOpen').onclick = async () => {
   await afterLoad(); setDirty(false);
 };
 $('#btnSave').onclick = () => save();
+$('#btnCloud').onclick = () => openCloudDialog();
 $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo;
 API.onBeforeClose(async () => {
   if (dirty && !confirm('저장하지 않은 변경 사항이 있어요. 그래도 종료할까요?')) return;
