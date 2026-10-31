@@ -1,0 +1,35 @@
+const { _electron: electron } = require('playwright');
+const path = require('path');
+const F = p => path.join(__dirname, 'fixtures', p);
+(async () => {
+  const app = await electron.launch({ executablePath: require(path.join(__dirname, '..', 'node_modules', 'electron')), args: ['.', '--no-sandbox'], cwd: path.join(__dirname, '..') });
+  const win = await app.firstWindow();
+  const errors = [];
+  win.on('pageerror', e => errors.push(String(e)));
+  await win.waitForTimeout(1000);
+  await win.evaluate(async (fx) => {
+    const s = window.__studio;
+    await s.importPaths([fx.a, fx.b, fx.m]);
+    for (const i of [0, 1, 2]) document.querySelectorAll('.media-item')[i].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  }, { a: F('a.mp4'), b: F('b_noaudio.mp4'), m: F('m.mp3') });
+  await win.waitForTimeout(1500);
+  const count = () => win.evaluate(() => window.__studio.project.tracks.map(t => t.clips.length).join(','));
+  console.log('start', await count());
+  await win.keyboard.press('b');
+  const box = await (await win.$('.clip.video')).boundingBox();
+  await win.mouse.click(box.x + box.width / 2, box.y + 10);
+  await win.waitForTimeout(300);
+  console.log('after blade', await count());
+  await win.keyboard.press('a');
+  await win.evaluate(() => window.__studio.seek(4));
+  await win.keyboard.press('BracketRight');
+  await win.waitForTimeout(300);
+  console.log('selected', await win.evaluate(() => document.querySelectorAll('.clip.selected').length));
+  await win.screenshot({ path: path.join(__dirname, 'ui5.png') });
+  await win.keyboard.press('Delete');
+  console.log('after delete', await count());
+  await win.keyboard.press('Control+z');
+  console.log('after undo', await count());
+  console.log('errors', errors);
+  app.process().kill('SIGKILL'); process.exit(0);
+})().catch(e => { console.error(e); process.exit(1); });

@@ -1,0 +1,21 @@
+const { _electron: electron } = require('playwright');
+const path = require('path');
+(async () => {
+  const opts = { executablePath: require(path.join(__dirname, '..', 'node_modules', 'electron')), args: ['.', '--no-sandbox', '--user-data-dir=' + process.env.UD], cwd: path.join(__dirname, '..'), env: { ...process.env, HANEUL_UPDATE_API: 'http://127.0.0.1:8765/latest' } };
+  let app = await electron.launch(opts);
+  let win = await app.firstWindow();
+  await win.waitForTimeout(1500);
+  console.log('v before', JSON.stringify(await win.evaluate(() => window.api.appVersion())));
+  await win.click('#btnUpdate');
+  await win.waitForTimeout(1500);
+  console.log('status', await win.textContent('#updStatus'));
+  await win.click('#updGo');
+  await win.waitForTimeout(2000);
+  console.log('status', await win.textContent('#updStatus'));
+  app.process().kill('SIGKILL');
+  app = await electron.launch(opts);
+  win = await app.firstWindow();
+  await win.waitForTimeout(1500);
+  console.log('v after', JSON.stringify(await win.evaluate(() => window.api.appVersion())), await win.evaluate(() => typeof window.__studio));
+  app.process().kill('SIGKILL'); process.exit(0);
+})().catch(e => { console.error(e); process.exit(1); });

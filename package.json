@@ -1,0 +1,47 @@
+{
+  "name": "haneul-studio",
+  "productName": "Haneul Studio",
+  "version": "0.2.0",
+  "description": "하늘 스튜디오 - 윈도우용 영상 편집기",
+  "main": "src/boot.js",
+  "author": "Haneul Studio",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/export-test.js",
+    "dist:win": "electron-builder --win zip --x64",
+    "bundle": "node tools/make-update.js"
+  },
+  "dependencies": {
+    "ffmpeg-static": "5.3.0"
+  },
+  "devDependencies": {
+    "electron": "38.4.0",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "appId": "com.haneul.studio",
+    "productName": "Haneul Studio",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**"
+    ],
+    "win": {
+      "target": [
+        "zip"
+      ],
+      "signAndEditExecutable": false
+    },
+    "electronLanguages": [
+      "ko",
+      "en-US"
+    ],
+    "compression": "maximum"
+  }
+}

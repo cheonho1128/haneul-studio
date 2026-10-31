@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data: blob:; media-src 'self' file: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>하늘 스튜디오</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand"><span class="logo"></span>하늘 스튜디오</div>
+  <div class="group">
+    <button id="btnNew" title="새 프로젝트 (Ctrl+N)">새로 만들기</button>
+    <button id="btnOpen" title="프로젝트 열기 (Ctrl+O)">열기</button>
+    <button id="btnSave" title="저장 (Ctrl+S)">저장</button>
+    <span class="sep"></span>
+    <button id="btnUndo" title="실행 취소 (Ctrl+Z)">↶</button>
+    <button id="btnRedo" title="다시 실행 (Ctrl+Y)">↷</button>
+  </div>
+  <div class="group">
+    <label>화면 비율
+      <select id="selRatio">
+        <option value="1920x1080">16:9 가로 (유튜브)</option>
+        <option value="1080x1920">9:16 세로 (쇼츠·릴스)</option>
+        <option value="1080x1080">1:1 정사각형</option>
+        <option value="1080x1350">4:5 세로 (피드)</option>
+        <option value="1440x1080">4:3</option>
+        <option value="2560x1080">21:9 시네마</option>
+      </select>
+    </label>
+    <label>FPS
+      <select id="selFps"><option>24</option><option selected>30</option><option>60</option></select>
+    </label>
+  </div>
+  <div class="spacer"></div>
+  <button id="btnUpdate" title="업데이트 확인">⟳ 업데이트<span id="updDot" class="dot hidden"></span></button>
+  <button id="btnShortcuts" title="단축키 (F1)">⌨ 단축키</button>
+  <span id="projName">제목 없음</span>
+  <button id="btnExport" class="primary">내보내기</button>
+</header>
+
+<main id="workspace">
+  <aside id="left" class="panel">
+    <nav class="tabs">
+      <button data-tab="media" class="active">미디어</button>
+      <button data-tab="text">텍스트</button>
+      <button data-tab="captions">자막</button>
+    </nav>
+    <section class="tab" id="tab-media">
+      <button id="btnImport" class="wide primary-outline">＋ 파일 가져오기</button>
+      <p class="hint">영상·사진·음악 파일을 여기로 끌어다 놓아도 됩니다. 항목을 타임라인으로 끌거나 더블클릭해서 추가하세요.</p>
+      <div id="mediaList"></div>
+    </section>
+    <section class="tab hidden" id="tab-text">
+      <p class="hint">템플릿을 클릭하면 재생헤드 위치에 텍스트가 추가됩니다.</p>
+      <div id="textPresets"></div>
+    </section>
+    <section class="tab hidden" id="tab-captions">
+      <p class="hint">자막은 텍스트 트랙에 들어갑니다. 재생헤드 위치에서 바로 자막을 입력할 수 있어요.</p>
+      <div class="caption-add">
+        <textarea id="captionInput" rows="2" placeholder="자막 내용을 입력하고 Enter"></textarea>
+        <label>길이(초) <input id="captionDur" type="number" min="0.3" step="0.1" value="2.5"></label>
+      </div>
+      <button id="btnSrtImport" class="wide">SRT 자막 가져오기</button>
+      <button id="btnSrtExport" class="wide">SRT 자막 내보내기</button>
+      <div id="captionList"></div>
+    </section>
+  </aside>
+
+  <section id="center">
+    <div id="previewWrap"><canvas id="preview"></canvas></div>
+    <div id="transport">
+      <button id="btnStart" title="처음으로 (Home)">⏮</button>
+      <button id="btnPlay" class="play" title="재생/정지 (Space)">▶</button>
+      <button id="btnEnd" title="끝으로 (End)">⏭</button>
+      <span id="timecode">00:00.00 / 00:00.00</span>
+    </div>
+  </section>
+
+  <aside id="right" class="panel">
+    <h3 id="propTitle">속성</h3>
+    <div id="props"><p class="hint">타임라인에서 클립을 선택하면 여기서 편집할 수 있어요.</p></div>
+  </aside>
+</main>
+
+<section id="timelineArea">
+  <div id="tlToolbar">
+    <span class="toolgroup"><button id="btnToolSelect" class="on" title="선택 도구 (A)">↖ 선택</button><button id="btnToolBlade" title="분할 도구 - 클릭한 곳을 자름 (B)">✂ 분할 도구</button></span>
+    <button id="btnSelLeft" title="재생헤드 왼쪽 클립 모두 선택 ([)">[ 왼쪽 선택</button>
+    <button id="btnSelRight" title="재생헤드 오른쪽 클립 모두 선택 (])">오른쪽 선택 ]</button>
+    <span class="sep"></span>
+    <button id="btnSplit" title="재생헤드에서 분할 (S)">⫶ 분할</button>
+    <button id="btnDelete" title="삭제 (Delete)">🗑</button>
+    <button id="btnFit" title="화면에 맞게 보기 (Shift+Z)">↔</button>
+    <button id="btnDup" title="복제 (Ctrl+D)">⧉</button>
+    <button id="btnTrimL" title="재생헤드 왼쪽 잘라내기 (Q)">⇤ 앞</button>
+    <button id="btnTrimR" title="재생헤드 오른쪽 잘라내기 (W)">⇥ 뒤</button>
+    <span class="sep"></span>
+    <button id="btnAddVideoTrack" title="영상 트랙 추가">＋영상</button>
+    <button id="btnAddTextTrack" title="텍스트 트랙 추가">＋텍스트</button>
+    <button id="btnAddAudioTrack" title="오디오 트랙 추가">＋오디오</button>
+    <span class="spacer"></span>
+    <label class="chk"><input type="checkbox" id="chkSnap" checked> 자석</label>
+    <label title="타임라인 확대">🔍 <input type="range" id="zoom" min="4" max="400" value="60"></label>
+  </div>
+  <div id="timeline">
+    <div id="trackHeads"></div>
+    <div id="tlScroll">
+      <div id="tlInner">
+        <canvas id="ruler" height="26"></canvas>
+        <div id="tracks"></div>
+        <div id="playhead"><div class="knob"></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div id="modal" class="hidden">
+  <div class="dialog">
+    <h3>동영상 내보내기</h3>
+    <div id="exportForm">
+      <label>화질
+        <select id="expQuality">
+          <option value="18">최고 (파일 큼)</option>
+          <option value="21" selected>높음</option>
+          <option value="25">보통</option>
+          <option value="29">낮음 (파일 작음)</option>
+        </select>
+      </label>
+      <label>인코딩 속도
+        <select id="expPreset">
+          <option value="veryfast">빠르게</option>
+          <option value="medium" selected>보통</option>
+          <option value="slow">느리게 (더 작은 파일)</option>
+        </select>
+      </label>
+      <p class="hint" id="expInfo"></p>
+      <div class="row"><button id="expCancel">취소</button><button id="expGo" class="primary">MP4로 내보내기</button></div>
+    </div>
+    <div id="exportProgress" class="hidden">
+      <div class="bar"><div id="expBar"></div></div>
+      <p id="expStatus">준비 중…</p>
+      <div class="row"><button id="expAbort">중지</button><button id="expDone" class="primary hidden">확인</button><button id="expShow" class="hidden">폴더 열기</button></div>
+    </div>
+  </div>
+</div>
+<div id="shortcutModal" class="modal hidden">
+  <div class="dialog wide-dialog">
+    <h3>단축키</h3>
+    <p class="hint">한글 입력 상태에서도 그대로 동작해요.</p>
+    <div id="shortcutList"></div>
+    <div class="row"><button id="shortcutClose" class="primary">닫기</button></div>
+  </div>
+</div>
+<div id="updateModal" class="modal hidden">
+  <div class="dialog">
+    <h3>업데이트</h3>
+    <p id="updStatus">확인 중…</p>
+    <pre id="updNotes" class="hidden"></pre>
+    <div class="bar hidden" id="updBarWrap"><div id="updBar"></div></div>
+    <div class="row">
+      <button id="updClose">닫기</button>
+      <button id="updPage" class="hidden">다운로드 페이지 열기</button>
+      <button id="updGo" class="primary hidden">지금 업데이트</button>
+      <button id="updRestart" class="primary hidden">다시 시작</button>
+    </div>
+  </div>
+</div>
+<div id="toast" class="hidden"></div>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
