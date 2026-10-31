@@ -3,6 +3,7 @@ contextBridge.exposeInMainWorld('api', {
   openMediaDialog: () => ipcRenderer.invoke('media:open-dialog'),
   probe: p => ipcRenderer.invoke('media:probe', p),
   filmstrip: (p, d) => ipcRenderer.invoke('media:filmstrip', p, d),
+  detectScenes: (p, from, to) => ipcRenderer.invoke('media:scenes', p, from, to),
   extractFrame: (p, t) => ipcRenderer.invoke('media:frame', p, t),
   waveform: p => ipcRenderer.invoke('media:waveform', p),
   saveProject: o => ipcRenderer.invoke('project:save', o),

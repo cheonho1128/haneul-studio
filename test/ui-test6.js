@@ -1,0 +1,30 @@
+const { _electron: electron } = require('playwright');
+const path = require('path');
+const F = p => path.join(__dirname, 'fixtures', p);
+(async () => {
+  const app = await electron.launch({ executablePath: require(path.join(__dirname, '..', 'node_modules', 'electron')), args: ['.', '--no-sandbox'], cwd: path.join(__dirname, '..') });
+  const win = await app.firstWindow();
+  const errors = [];
+  win.on('pageerror', e => errors.push(String(e)));
+  await win.waitForTimeout(1000);
+  await win.evaluate(async (fx) => { await window.__studio.importPaths([fx.s, fx.a]); }, { s: F('scenes.mp4'), a: F('a.mp4') });
+  await win.waitForTimeout(800);
+  const drop = (i, x) => win.evaluate(([i, x]) => {
+    const s = window.__studio; const tr = s.project.tracks.find(t => t.main);
+    const row = document.querySelector(`.track[data-id="${tr.id}"]`); const r = row.getBoundingClientRect();
+    const dt = new DataTransfer(); dt.setData('text/media-id', s.project.media[i].id);
+    row.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, clientX: r.left + x, clientY: r.top + 10, dataTransfer: dt }));
+    return tr.clips.slice().sort((a, b) => a.start - b.start).map(c => `${s.project.media.find(m => m.id === c.mediaId).path.split('/').pop()}@${c.start.toFixed(2)}`).join(' ');
+  }, [i, x]);
+  console.log('drop1', await drop(0, 400));
+  console.log('drop2 at far right', await drop(1, 1200));
+  console.log('drop3 at start', await drop(1, 5));
+  await win.evaluate(() => window.__studio.seek(3));
+  await win.click('#btnToolBlade');
+  await win.hover('.clip.video >> nth=1');
+  await win.screenshot({ path: path.join(__dirname, 'ui10.png') });
+  console.log('cursor', (await win.evaluate(() => getComputedStyle(document.querySelector('.clip.video')).cursor)).slice(0,40));
+  console.log('canvas', await win.evaluate(() => { const c = document.querySelector('#preview').getBoundingClientRect(), w = document.querySelector('#previewWrap').getBoundingClientRect(); return [c.width, c.height, w.width, w.height].map(Math.round).join(','); }));
+  console.log('errors', errors);
+  app.process().kill('SIGKILL'); process.exit(0);
+})().catch(e => { console.error(e); process.exit(1); });

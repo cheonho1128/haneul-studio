@@ -41,13 +41,14 @@ function newProject() {
     tracks: [
       { id: uid(), kind: 'text', name: '텍스트 1', clips: [] },
       { id: uid(), kind: 'video', name: '영상 2', clips: [] },
-      { id: uid(), kind: 'video', name: '메인 영상', clips: [] },
+      { id: uid(), kind: 'video', name: '메인 영상', main: true, clips: [] },
       { id: uid(), kind: 'audio', name: '오디오 1', clips: [] },
     ],
   };
 }
 
 const clipDur = Core.clipDuration;
+const durClip = c => c.type === 'text' || c.type === 'adjust';
 const clipEnd = Core.clipEnd;
 const projDur = () => Math.max(0, ...project.tracks.flatMap(t => t.clips.map(clipEnd)));
 const mediaOf = c => project.media.find(m => m.id === c.mediaId);
@@ -72,7 +73,24 @@ function toast(msg, ms = 2200) {
 
 /* ---------- 실행 취소 ---------- */
 function snapshot() { return JSON.stringify(project); }
+/* ---------- 메인 트랙 자석 (캡컷처럼 맨 앞부터 빈틈 없이) ---------- */
+function mainTrack() {
+  return project.tracks.find(t => t.main) || project.tracks.find(t => t.name === '메인 영상') || [...project.tracks].reverse().find(t => t.kind === 'video');
+}
+function mainMagnetOn() { return project.mainMagnet !== false; }
+function packMain() {
+  const tr = mainTrack(); if (!tr || !mainMagnetOn() || tr.locked) return;
+  let t = 0;
+  for (const c of tr.clips.slice().sort((a, b) => a.start - b.start)) { c.start = +t.toFixed(4); t = clipEnd(c); }
+}
+/** 메인 트랙에 x초 위치로 끼워 넣을 때의 시작 시간 */
+function mainInsertTime(tr, x) {
+  let t = 0;
+  for (const c of tr.clips.slice().sort((a, b) => a.start - b.start)) { if (c.start + clipDur(c) / 2 < x) t = clipEnd(c); else break; }
+  return t;
+}
 function commit() {
+  packMain();
   undoStack.push(commit.last); if (undoStack.length > 200) undoStack.shift();
   redoStack.length = 0; commit.last = snapshot(); setDirty(true);
 }
@@ -202,7 +220,8 @@ function addMediaClip(m, track, start) {
     filter: { preset: 'none', brightness: 0, contrast: 0, saturation: 0, blur: 0 },
     transform: { scale: 1, x: 0, y: 0, rotation: 0 },
   };
-  c.start = freeSpot(track, Math.max(0, start), dur);
+  if (track === mainTrack() && mainMagnetOn()) c.start = mainInsertTime(track, Math.max(0, start)) - 1e-4;
+  else c.start = freeSpot(track, Math.max(0, start), dur);
   track.clips.push(c);
   setSel(c.id);
   commit(); renderAll();
@@ -278,7 +297,7 @@ const hasFx = (c, type) => (c.effects || []).some(e => e.type === type);
 const fxAmt = (c, type) => { const e = (c.effects || []).find(x => x.type === type); return e ? (e.amount ?? 50) / 100 : 0; };
 
 function fadeAlpha(c, local, dur, tp = {}) {
-  let a = c.opacity ?? 1;
+  let a = c.kf ? Core.kfValue(c, 'opacity', Math.min(local, dur)) : (c.opacity ?? 1);
   const fi = Math.min(Math.max(c.fadeIn || 0, tp.alphaIn || 0), dur / 2), fo = Math.min(Math.max(c.fadeOut || 0, tp.alphaOut || 0), dur / 2);
   local = Math.min(local, dur);
   if (fi > 0 && local < fi) a *= local / fi;
@@ -288,7 +307,7 @@ function fadeAlpha(c, local, dur, tp = {}) {
 
 function sizeCanvas() {
   const wrap = $('#previewWrap');
-  const maxW = wrap.clientWidth - 8, maxH = wrap.clientHeight - 8;
+  const maxW = wrap.clientWidth, maxH = wrap.clientHeight;
   const r = Math.min(maxW / project.width, maxH / project.height);
   const dpr = window.devicePixelRatio || 1;
   const w = Math.max(16, Math.round(project.width * r)), h = Math.max(16, Math.round(project.height * r));
@@ -452,7 +471,9 @@ function applyLut(p, L) {
 function drawMediaClip(src, c, m, W, H, t, local, dur, tp, alpha) {
   const sw = src.videoWidth || src.naturalWidth || m.width, sh = src.videoHeight || src.naturalHeight || m.height;
   if (!sw || !sh) return;
-  const tf = c.transform || { scale: 1, x: 0, y: 0, rotation: 0 };
+  const tf0 = c.transform || { scale: 1, x: 0, y: 0, rotation: 0 };
+  const lk = Math.min(local, dur);
+  const tf = c.kf ? { scale: Core.kfValue(c, 'scale', lk), x: Core.kfValue(c, 'x', lk), y: Core.kfValue(c, 'y', lk), rotation: Core.kfValue(c, 'rotation', lk) } : tf0;
   const fit = Math.min(W / sw, H / sh) * tf.scale;
   const dw = sw * fit, dh = sh * fit;
   const vdur = dur + (tp.extend || 0);
@@ -569,6 +590,12 @@ function draw() {
       if (t < c.start || t >= end) continue;
       const local = t - c.start;
       if (c.type === 'text') { if (!tr.hidden) drawTextAnimated(ctx, c, W, H, s, local, dur); continue; }
+      if (c.type === 'adjust') {
+        if (tr.hidden) continue;
+        const snap = fxCanvas(9, W, H); snap.getContext('2d').drawImage(canvas, 0, 0);
+        drawMediaClip(snap, { ...c, transform: { scale: 1, x: 0, y: 0, rotation: 0 }, kf: null }, { width: W, height: H }, W, H, t, local, dur, {}, fadeAlpha({ ...c, kf: null }, local, dur));
+        continue;
+      }
       const m = mediaOf(c); if (!m) continue;
       const a = fadeAlpha(c, local, dur, tp);
       let src;
@@ -599,8 +626,10 @@ function clipBox(c, W, H, s) {
     const ax = c.align === 'left' ? 0 : c.align === 'right' ? 1 : 0.5;
     return { cx: c.x * W + bw * (0.5 - ax), cy: c.y * H, w: bw, h: bh, rot: 0 };
   }
+  if (c.type === 'adjust') return null;
   const m = mediaOf(c); if (!m) return null;
-  const tf = c.transform;
+  const lk = clamp(playhead - c.start, 0, clipDur(c));
+  const tf = c.kf ? { scale: Core.kfValue(c, 'scale', lk), x: Core.kfValue(c, 'x', lk), y: Core.kfValue(c, 'y', lk), rotation: Core.kfValue(c, 'rotation', lk) } : c.transform;
   const fit = Math.min(W / m.width, H / m.height) * tf.scale;
   return { cx: W / 2 + tf.x * W, cy: H / 2 + tf.y * H, w: m.width * fit, h: m.height * fit, rot: tf.rotation || 0 };
 }
@@ -617,9 +646,15 @@ function drawSelection(c, W, H, s) {
 }
 
 function syncMedia(el, c, t, muted, volFade) {
-  const srcT = c.in + (t - c.start) * (c.speed || 1);
-  el.muted = !!muted;
-  el.volume = clamp((c.volume ?? 1) * volFade, 0, 1);
+  const local = t - c.start;
+  const srcT = c.reverse ? Math.max(c.in, c.out - local * (c.speed || 1)) : c.in + local * (c.speed || 1);
+  el.muted = !!muted || !!c.reverse;
+  el.volume = clamp(Core.kfValue(c, 'volume', Math.min(local, clipDur(c))) * volFade, 0, 1);
+  if (playing && c.reverse) {
+    if (!el.paused) el.pause();
+    if (!el.seeking && Math.abs(el.currentTime - srcT) > 0.03) el.currentTime = srcT;
+    return;
+  }
   if (playing) {
     if (el.playbackRate !== c.speed) el.playbackRate = c.speed;
     if (Math.abs(el.currentTime - srcT) > 0.25) el.currentTime = srcT;
@@ -646,8 +681,11 @@ function setPlaying(v) {
   if (v) { playStartWall = performance.now(); playStartT = playhead; requestAnimationFrame(tick); }
   else { for (const el of videoEls.values()) el.pause(); requestDraw(); }
 }
+let kfPropsTimer = null;
 function seek(t) {
   playhead = clamp(t, 0, Math.max(projDur(), 0));
+  const selc = selectedId && findClip(selectedId);
+  if (!playing && selc && Core.anyKf(selc.clip)) { clearTimeout(kfPropsTimer); kfPropsTimer = setTimeout(renderProps, 60); }
   if (playing) { playStartWall = performance.now(); playStartT = playhead; }
   updatePlayhead(); requestDraw();
 }
@@ -675,9 +713,13 @@ canvas.addEventListener('pointerdown', e => {
       const d1 = Math.hypot(b.w / 2 + dx * W, b.h / 2 + dy * H);
       const k = Math.max(0.05, d1 / d0);
       if (c.type === 'text') c.fontSize = Math.round(clamp(orig.fontSize * k, 8, 600));
-      else c.transform.scale = +clamp(orig.transform.scale * k, 0.05, 10).toFixed(3);
+      else { const lk = clamp(playhead - c.start, 0, clipDur(c)); setProp(c, 'scale', +clamp(Core.kfValue(orig, 'scale', lk) * k, 0.05, 10).toFixed(3), lk); }
     } else if (c.type === 'text') { c.x = +(orig.x + dx).toFixed(4); c.y = +(orig.y + dy).toFixed(4); }
-    else { c.transform.x = +(orig.transform.x + dx).toFixed(4); c.transform.y = +(orig.transform.y + dy).toFixed(4); }
+    else {
+      const lk = clamp(playhead - c.start, 0, clipDur(c));
+      setProp(c, 'x', +(Core.kfValue(orig, 'x', lk) + dx).toFixed(4), lk);
+      setProp(c, 'y', +(Core.kfValue(orig, 'y', lk) + dy).toFixed(4), lk);
+    }
     requestDraw();
   };
   const up = () => { canvas.removeEventListener('pointermove', move); canvas.removeEventListener('pointerup', up); commit(); renderProps(); };
@@ -701,6 +743,7 @@ function renderTimeline() {
     head.innerHTML = `<span class="nm" title="더블클릭해서 이름 바꾸기">${icon} </span>
       ${tr.kind !== 'audio' ? `<button class="${tr.hidden ? 'off' : ''}" data-a="hide" title="숨기기">${tr.hidden ? '◌' : '👁'}</button>` : ''}
       ${tr.kind !== 'text' ? `<button class="${tr.muted ? 'off' : ''}" data-a="mute" title="음소거">${tr.muted ? '🔇' : '🔊'}</button>` : ''}
+      <button class="${tr.locked ? 'off' : ''}" data-a="lock" title="트랙 잠금">${tr.locked ? '🔒' : '🔓'}</button>
       <button data-a="up" title="위로">▲</button><button data-a="del" title="트랙 삭제">✕</button>`;
     head.querySelector('.nm').append(tr.name);
     head.querySelector('.nm').ondblclick = () => { const n = prompt('트랙 이름', tr.name); if (n) { tr.name = n; commit(); renderTimeline(); } };
@@ -708,6 +751,7 @@ function renderTimeline() {
       const a = e.target.dataset.a; if (!a) return;
       if (a === 'hide') tr.hidden = !tr.hidden;
       if (a === 'mute') tr.muted = !tr.muted;
+      if (a === 'lock') tr.locked = !tr.locked;
       if (a === 'up' && ti > 0) [project.tracks[ti - 1], project.tracks[ti]] = [project.tracks[ti], project.tracks[ti - 1]];
       if (a === 'del') {
         if (tr.clips.length && !confirm('트랙과 안의 클립을 모두 삭제할까요?')) return;
@@ -733,6 +777,8 @@ function renderTimeline() {
         { label: '여기에 붙여넣기', key: 'Ctrl+V', action: () => { seek(t); paste(); }, disabled: !clipboard },
         tr.kind === 'text' ? { label: '여기에 텍스트 추가', key: 'T', action: () => { seek(t); addTextClip({ ...TEXT_PRESETS[0].s }, t, 3, tr); } } : null,
         { label: '재생헤드 여기로', action: () => seek(t) },
+      { label: '여기에 마커 추가', key: 'M', action: () => { seek(t); addMarker(); } },
+      tr.kind === 'video' ? { label: '여기에 조정 레이어 추가', action: () => { seek(t); addAdjustLayer(); } } : null,
         '-',
         { label: '모든 클립 선택', key: 'Ctrl+A', action: () => selectWhere(() => true) },
         { label: '이 트랙 클립 모두 선택', action: () => selectWhere((c, t2) => t2 === tr) },
@@ -749,20 +795,20 @@ function renderTimeline() {
     renderTransitionMarkers(tr, row);
     tracksEl.appendChild(row);
   });
-  drawRuler(); updatePlayhead();
+  drawRuler(); updatePlayhead(); renderMarkers();
 }
 
 function renderClip(c, tr) {
   const el = document.createElement('div');
   const m = c.type === 'text' ? null : mediaOf(c);
-  const kind = c.type === 'text' ? 'text' : (tr.kind === 'audio' ? 'audio' : (m ? m.kind : 'video'));
+  const kind = c.type === 'text' ? 'text' : c.type === 'adjust' ? 'adjust' : (tr.kind === 'audio' ? 'audio' : (m ? m.kind : 'video'));
   el.className = `clip ${kind}` + (isSel(c.id) ? ' selected' : '');
   el.style.left = c.start * pxPerSec + 'px';
   const wpx = Math.max(4, clipDur(c) * pxPerSec);
   el.style.width = wpx + 'px';
   el.dataset.id = c.id;
   const label = document.createElement('div'); label.className = 'label';
-  label.textContent = c.type === 'text' ? c.text.replace(/\n/g, ' ') : (m ? m.name : '(없는 파일)');
+  label.textContent = c.type === 'text' ? c.text.replace(/\n/g, ' ') : c.type === 'adjust' ? '◐ 조정 레이어' : (m ? m.name : '(없는 파일)');
   el.appendChild(label);
   const badges = [];
   if (c.speed && c.speed !== 1) badges.push(`${c.speed}x`);
@@ -816,6 +862,8 @@ function renderClip(c, tr) {
   const dur = clipDur(c);
   if (c.fadeIn > 0) { const f = document.createElement('div'); f.className = 'fade in'; f.style.width = Math.min(c.fadeIn, dur) * pxPerSec + 'px'; el.appendChild(f); }
   if (c.fadeOut > 0) { const f = document.createElement('div'); f.className = 'fade out'; f.style.width = Math.min(c.fadeOut, dur) * pxPerSec + 'px'; el.appendChild(f); }
+  for (const t of kfTimes(c)) { const d = document.createElement('div'); d.className = 'kfdot'; d.style.left = t * pxPerSec + 'px'; el.appendChild(d); }
+  if (tr.locked) el.classList.add('locked');
   const hl = document.createElement('div'); hl.className = 'handle l';
   const hr = document.createElement('div'); hr.className = 'handle r';
   el.append(hl, hr);
@@ -884,7 +932,7 @@ function groupDrag(e, anchor) {
 }
 
 function snapPoints(exceptId) {
-  const pts = [0, playhead];
+  const pts = [0, playhead, ...(project.markers || []).map(m => m.t)];
   for (const t of project.tracks) for (const c of t.clips) if (c.id !== exceptId) pts.push(c.start, clipEnd(c));
   return pts;
 }
@@ -905,6 +953,7 @@ function showSnap(t) {
 function clipPointerDown(e, c, tr, el) {
   if (e.button !== 0) return;
   e.stopPropagation();
+  if (tr.locked) { selectClip(c.id); toast('잠긴 트랙이에요. 트랙 이름 옆 🔒를 눌러 풀 수 있어요.'); return; }
   if (tool === 'blade') {
     let t = (e.clientX - innerEl.getBoundingClientRect().left) / pxPerSec;
     if ($('#chkSnap').checked) t = snap(t, snapPoints(null)).t;
@@ -916,6 +965,7 @@ function clipPointerDown(e, c, tr, el) {
   const mode = e.target.classList.contains('l') ? 'trimL' : e.target.classList.contains('r') ? 'trimR' : 'move';
   const startX = e.clientX, startY = e.clientY;
   const orig = { ...c };
+  const origKf = c.kf ? JSON.parse(JSON.stringify(c.kf)) : null;
   const m = c.type === 'text' ? null : mediaOf(c);
   const pts = snapPoints(c.id);
   let moved = false, curTrack = tr;
@@ -937,7 +987,7 @@ function clipPointerDown(e, c, tr, el) {
       const under = document.elementsFromPoint(ev.clientX, ev.clientY).find(x => x.classList && x.classList.contains('track'));
       if (under && under.dataset.id !== curTrack.id) {
         const nt = project.tracks.find(t => t.id === under.dataset.id);
-        const k = c.type === 'text' ? 'text' : m.kind;
+        const k = c.type === 'text' ? 'text' : c.type === 'adjust' ? 'video' : m.kind;
         if (nt && trackFits(nt, k)) {
           curTrack.clips = curTrack.clips.filter(x => x !== c); nt.clips.push(c); curTrack = nt;
           under.appendChild(el);
@@ -948,19 +998,20 @@ function clipPointerDown(e, c, tr, el) {
       showSnap(snap(orig.start + dt, pts).hit);
       const speed = c.speed || 1;
       let delta = s - orig.start;
-      if (c.type === 'text' || (m && m.kind === 'image')) {
+      if (durClip(c) || (m && m.kind === 'image')) {
         delta = clamp(delta, -orig.start, dur - 0.1);
         c.start = orig.start + delta;
-        if (c.type === 'text') c.duration = orig.duration - delta; else c.out = orig.out - delta;
+        if (durClip(c)) c.duration = orig.duration - delta; else c.out = orig.out - delta;
       } else {
         delta = clamp(delta, Math.max(-orig.start, -orig.in / speed), dur - 0.1);
         c.start = orig.start + delta; c.in = orig.in + delta * speed;
       }
+      if (origKf) c.kf = shiftKf(origKf, c.start - orig.start);
     } else {
       const e2 = snap(orig.start + dur + dt, pts);
       showSnap(e2.hit);
       let nd = Math.max(0.1, e2.t - orig.start);
-      if (c.type === 'text') c.duration = nd;
+      if (durClip(c)) c.duration = nd;
       else if (m.kind === 'image') c.out = orig.in + nd;
       else c.out = Math.min(m.duration, orig.in + nd * (c.speed || 1));
     }
@@ -974,7 +1025,11 @@ function clipPointerDown(e, c, tr, el) {
     if (moved) {
       // 같은 트랙에서 겹치면 빈 자리로 밀기
       const others = curTrack.clips.filter(x => x !== c);
-      if (others.some(o => c.start < clipEnd(o) - 1e-6 && clipEnd(c) > o.start + 1e-6)) c.start = freeSpot(curTrack, c.start, clipDur(c), c.id);
+      if (mode === 'move' && curTrack === mainTrack() && mainMagnetOn()) {
+        const center = c.start + clipDur(c) / 2; let t = 0;
+        for (const o of others.slice().sort((p, q) => p.start - q.start)) { if (o.start + clipDur(o) / 2 < center) t = clipEnd(o); else break; }
+        c.start = Math.max(0, t - 1e-4);
+      } else if (others.some(o => c.start < clipEnd(o) - 1e-6 && clipEnd(c) > o.start + 1e-6)) c.start = freeSpot(curTrack, c.start, clipDur(c), c.id);
       commit();
     }
     renderTimeline(); renderProps(); requestDraw();
@@ -1043,6 +1098,56 @@ function drawRuler() {
   }
 }
 
+/* ---------- 마커 / 시작·끝 구간 ---------- */
+const MARK_COLORS = ['#ffd84f', '#4fb3ff', '#ff6b6b', '#5bd38a', '#c88bff'];
+function addMarker() {
+  project.markers = project.markers || [];
+  if (project.markers.some(m => Math.abs(m.t - playhead) < 0.01)) return;
+  project.markers.push({ id: uid(), t: +playhead.toFixed(3), label: '', color: MARK_COLORS[project.markers.length % MARK_COLORS.length] });
+  project.markers.sort((a, b) => a.t - b.t);
+  commit(); renderMarkers(); toast('마커를 추가했어요 (M)');
+}
+function jumpMarker(dir) {
+  const ms = (project.markers || []).map(m => m.t);
+  const t = dir > 0 ? ms.find(x => x > playhead + 1e-3) : [...ms].reverse().find(x => x < playhead - 1e-3);
+  if (t !== undefined) seek(t);
+}
+function renderMarkers() {
+  innerEl.querySelectorAll('.marker, .io-range').forEach(e => e.remove());
+  if (project.inPoint != null || project.outPoint != null) {
+    const a = project.inPoint ?? 0, b = project.outPoint ?? projDur();
+    const r = document.createElement('div'); r.className = 'io-range';
+    r.style.left = a * pxPerSec + 'px'; r.style.width = Math.max(2, (b - a) * pxPerSec) + 'px';
+    r.title = `내보낼 구간 ${fmt(a)} ~ ${fmt(b)} (Alt+X로 지우기)`;
+    innerEl.appendChild(r);
+  }
+  for (const mk of project.markers || []) {
+    const d = document.createElement('div'); d.className = 'marker';
+    d.style.left = mk.t * pxPerSec + 'px'; d.style.setProperty('--mc', mk.color);
+    d.title = (mk.label || '마커') + ' · ' + fmt(mk.t) + ' (우클릭: 이름/삭제)';
+    if (mk.label) { const l = document.createElement('span'); l.textContent = mk.label; d.appendChild(l); }
+    d.addEventListener('pointerdown', e => { e.stopPropagation(); seek(mk.t); });
+    d.addEventListener('contextmenu', e => {
+      e.preventDefault(); e.stopPropagation();
+      showMenu(e.clientX, e.clientY, [
+        { label: '이름 바꾸기', action: () => { const n = prompt('마커 이름', mk.label); if (n !== null) { mk.label = n; commit(); renderMarkers(); } } },
+        { label: '색 바꾸기', action: () => { mk.color = MARK_COLORS[(MARK_COLORS.indexOf(mk.color) + 1) % MARK_COLORS.length]; commit(); renderMarkers(); } },
+        { label: '마커 삭제', action: () => { project.markers = project.markers.filter(x => x !== mk); commit(); renderMarkers(); } },
+        { label: '모든 마커 삭제', action: () => { project.markers = []; commit(); renderMarkers(); } },
+      ]);
+    });
+    innerEl.appendChild(d);
+  }
+}
+function setInOut(which) {
+  if (which === 'in') project.inPoint = +playhead.toFixed(3);
+  else if (which === 'out') project.outPoint = +playhead.toFixed(3);
+  else { delete project.inPoint; delete project.outPoint; }
+  if (project.inPoint != null && project.outPoint != null && project.outPoint <= project.inPoint) { const a = project.inPoint; project.inPoint = project.outPoint; project.outPoint = a; }
+  commit(); renderMarkers();
+  toast(which === 'clear' ? '구간을 지웠어요' : which === 'in' ? '시작 지점을 정했어요 (I)' : '끝 지점을 정했어요 (O)');
+}
+
 function updatePlayhead(follow) {
   const x = playhead * pxPerSec;
   $('#playhead').style.left = x + 'px';
@@ -1090,18 +1195,29 @@ $('#timelineArea').addEventListener('pointerdown', e => {
 });
 
 /* ---------- 편집 명령 ---------- */
+/** 클립 앞부분을 잘라냈을 때 키프레임이 원래 장면에 붙어 있도록 시간을 당긴다 */
+function shiftKf(kf, dt) {
+  const out = {};
+  for (const p in kf) {
+    const k = kf[p].map(x => ({ ...x, t: +(x.t - dt).toFixed(3) }));
+    out[p] = k;
+  }
+  return out;
+}
 function splitAt(t = playhead) {
   const targets = [];
+  if (selectedId) { const f = findClip(selectedId); if (f && f.track.locked) { toast('잠긴 트랙이에요'); return; } }
   const sel = selectedId && findClip(selectedId);
   if (sel && t > sel.clip.start + 0.02 && t < clipEnd(sel.clip) - 0.02) targets.push(sel);
-  else for (const tr of project.tracks) for (const c of tr.clips) if (t > c.start + 0.02 && t < clipEnd(c) - 0.02 && !tr.hidden) targets.push({ track: tr, clip: c });
+  else for (const tr of project.tracks) for (const c of tr.clips) if (t > c.start + 0.02 && t < clipEnd(c) - 0.02 && !tr.hidden && !tr.locked) targets.push({ track: tr, clip: c });
   if (!targets.length) { toast('재생헤드 위치에 자를 클립이 없어요'); return; }
   for (const { track, clip: c } of targets) {
     const local = t - c.start;
     const b = JSON.parse(JSON.stringify(c)); b.id = uid();
-    if (c.type === 'text') { b.duration = c.duration - local; c.duration = local; }
+    if (durClip(c)) { b.duration = c.duration - local; c.duration = local; }
     else { const cut = c.in + local * (c.speed || 1); b.in = cut; c.out = cut; }
     b.start = t; c.fadeOut = 0; b.fadeIn = 0; b.transitionIn = { type: 'none', duration: 0.5 };
+    if (b.kf) b.kf = shiftKf(b.kf, local);
     track.clips.push(b);
   }
   commit(); renderTimeline(); renderProps(); requestDraw();
@@ -1113,17 +1229,18 @@ function trimSide(side) {
   if (t <= c.start || t >= clipEnd(c)) { toast('재생헤드가 선택한 클립 위에 있어야 해요'); return; }
   const local = t - c.start;
   if (side === 'left') {
-    if (c.type === 'text') c.duration -= local; else c.in += local * (c.speed || 1);
+    if (durClip(c)) c.duration -= local; else c.in += local * (c.speed || 1);
     c.start = t;
+    if (c.kf) c.kf = shiftKf(c.kf, local);
   } else {
-    if (c.type === 'text') c.duration = local; else c.out = c.in + local * (c.speed || 1);
+    if (durClip(c)) c.duration = local; else c.out = c.in + local * (c.speed || 1);
   }
   commit(); renderTimeline(); renderProps(); requestDraw();
 }
 function deleteSelected() {
   if (!selectedIds.size && !selectedId) return;
   const ids = new Set([...selectedIds, selectedId].filter(Boolean));
-  for (const tr of project.tracks) tr.clips = tr.clips.filter(x => !ids.has(x.id));
+  for (const tr of project.tracks) if (!tr.locked) tr.clips = tr.clips.filter(x => !ids.has(x.id));
   setSel(null); cleanupEls();
   commit(); renderTimeline(); renderProps(); requestDraw(); renderCaptions();
 }
@@ -1149,7 +1266,7 @@ function addTrack(kind) {
 const TAB_OF = {
   '내용': 'text', '글꼴': 'text', '색상': 'text', '위치': 'text', '일괄 적용': 'text',
   '등장 애니메이션': 'anim', '시간 · 전환': 'anim',
-  '화면': 'basic', '정지 화면': 'basic', '속도': 'basic', '소리': 'audio',
+  '화면': 'basic', '정지 화면': 'basic', '속도': 'basic', '역재생': 'basic', '소리': 'audio',
   '필터': 'filter', '기본 보정': 'color', '라이트': 'color', '색감': 'color', 'LUT (색 프리셋 파일)': 'color',
   '효과': 'effects', '크로마키 (배경색 지우기)': 'effects',
   '전환 (앞 클립에서 넘어올 때)': 'trans', '전환 효과 · 시간': 'trans',
@@ -1188,8 +1305,9 @@ function renderPropsInner() {
   const sel = selectedId && findClip(selectedId);
   if (!sel) { $('#propTitle').textContent = '속성'; box.innerHTML = '<p class="hint">타임라인에서 클립을 선택하면 여기서 편집할 수 있어요.<br><br>단축키는 F1 키나 위쪽의 ⌨ 단축키 버튼으로 볼 수 있어요.</p>'; return; }
   const c = sel.clip;
-  const m = c.type === 'text' ? null : mediaOf(c);
-  $('#propTitle').textContent = c.type === 'text' ? '텍스트' : m.kind === 'audio' ? '오디오' : m.kind === 'image' ? '사진' : '영상';
+  const m = c.type === 'text' ? null : c.type === 'adjust' ? { kind: 'adjust', name: '조정 레이어' } : mediaOf(c);
+  $('#propTitle').textContent = c.type === 'text' ? '텍스트' : m.kind === 'adjust' ? '조정 레이어' : m.kind === 'audio' ? '오디오' : m.kind === 'image' ? '사진' : '영상';
+  c.filter = c.filter || (c.type !== 'text' ? { preset: 'none', brightness: 0, contrast: 0, saturation: 0, blur: 0 } : c.filter);
   const live = () => { requestDraw(); };
   const done = () => { commit(); renderTimeline(); renderCaptions(); };
 
@@ -1203,6 +1321,17 @@ function renderPropsInner() {
     r.oninput = () => apply(r.value, false); r.onchange = () => apply(r.value, true);
     n.onchange = () => apply(n.value, true);
     g.appendChild(row);
+  };
+  const local = () => clamp(playhead - c.start, 0, clipDur(c));
+  // 키프레임 슬라이더: ◆ 버튼으로 현재 위치에 키프레임 추가/삭제
+  const kfSlider = (g, label, prop, min, max, step, mul) => {
+    slider(g, label, () => +(Core.kfValue(c, prop, local()) * mul).toFixed(2), v => setProp(c, prop, v / mul, local()), min, max, step);
+    const row = g.lastChild;
+    const has = Core.hasKf(c, prop), at = has && c.kf[prop].find(k => Math.abs(k.t - local()) < 0.5 / project.fps);
+    const b = document.createElement('button'); b.className = 'kf-btn' + (at ? ' on' : has ? ' has' : '');
+    b.textContent = '◆'; b.title = at ? '이 위치의 키프레임 지우기' : '현재 위치에 키프레임 추가';
+    b.onclick = () => { toggleKf(c, prop, local()); commit(); renderTimeline(); renderProps(); requestDraw(); };
+    row.classList.add('with-kf'); row.appendChild(b);
   };
   const field = (g, label, input) => { const row = document.createElement('div'); row.className = 'prop full'; row.innerHTML = `<span>${label}</span>`; row.appendChild(input); g.appendChild(row); };
 
@@ -1298,13 +1427,33 @@ function renderPropsInner() {
     return;
   }
 
-  if (m.kind !== 'audio') {
+  if (m.kind === 'adjust') {
     const g = group('화면');
-    slider(g, '크기(%)', () => Math.round(c.transform.scale * 100), v => c.transform.scale = v / 100, 5, 400, 1);
-    slider(g, '가로 위치', () => Math.round(c.transform.x * 100), v => c.transform.x = v / 100, -100, 100, 1);
-    slider(g, '세로 위치', () => Math.round(c.transform.y * 100), v => c.transform.y = v / 100, -100, 100, 1);
-    slider(g, '회전(°)', () => c.transform.rotation, v => c.transform.rotation = v, -180, 180, 1);
-    slider(g, '불투명도', () => Math.round((c.opacity ?? 1) * 100), v => c.opacity = v / 100, 0, 100, 1);
+    slider(g, '길이(초)', () => +c.duration.toFixed(2), v => c.duration = v, 0.1, 60, 0.1, { relayout: true, hardMax: 36000 });
+    const tip = document.createElement('p'); tip.className = 'hint';
+    tip.textContent = '조정 레이어는 아래쪽 트랙의 모든 영상에 필터·색 보정·효과를 한꺼번에 적용해요.';
+    g.appendChild(tip);
+  }
+  if (m.kind !== 'audio' && m.kind !== 'adjust') {
+    const g = group('화면');
+    kfSlider(g, '크기(%)', 'scale', 5, 400, 1, 100);
+    kfSlider(g, '가로 위치', 'x', -100, 100, 1, 100);
+    kfSlider(g, '세로 위치', 'y', -100, 100, 1, 100);
+    kfSlider(g, '회전(°)', 'rotation', -360, 360, 1, 1);
+    kfSlider(g, '불투명도', 'opacity', 0, 100, 1, 100);
+    if (Core.anyKf(c)) {
+      const nav = document.createElement('div'); nav.className = 'chips';
+      const times = kfTimes(c);
+      const mk = (txt, fn) => { const b = document.createElement('button'); b.textContent = txt; b.onclick = fn; nav.appendChild(b); };
+      mk('◀ 이전 키프레임', () => { const t = [...times].reverse().find(x => x < local() - 1e-3); if (t !== undefined) seek(c.start + t); });
+      mk('다음 키프레임 ▶', () => { const t = times.find(x => x > local() + 1e-3); if (t !== undefined) seek(c.start + t); });
+      mk('부드럽게', () => { for (const p of Core.KF_PROPS) (c.kf[p] || []).forEach(k => k.ease = 'smooth'); commit(); toast('키프레임 사이를 부드럽게 바꿨어요'); });
+      mk('키프레임 모두 지우기', () => { for (const p of Core.KF_PROPS) if (Core.hasKf(c, p)) { setStatic(c, p, Core.kfValue(c, p, local())); } delete c.kf; commit(); renderAll(); });
+      field(g, '키프레임', nav);
+    }
+    const kh = document.createElement('p'); kh.className = 'hint';
+    kh.textContent = '◆를 누르면 지금 위치에 키프레임이 생겨요. 재생헤드를 옮기고 값을 바꾸면 그 사이가 자동으로 움직여요.';
+    g.appendChild(kh);
     const fill = document.createElement('div'); fill.className = 'chips';
     [['맞춤', 1], ['화면 채우기', 'fill']].forEach(([n, v]) => {
       const b = document.createElement('button'); b.textContent = n;
@@ -1386,6 +1535,7 @@ function renderPropsInner() {
       slider(ge, def ? def.name : e.type, () => e.amount ?? 50, v => e.amount = v, 0, 100, 1);
     });
 
+    if (m.kind !== 'adjust') {
     const gk = group('크로마키 (배경색 지우기)');
     c.chroma = c.chroma || { on: false, color: '#00ff00', similarity: 30 };
     const krow = document.createElement('div'); krow.style.cssText = 'display:flex;gap:8px;align-items:center';
@@ -1399,6 +1549,8 @@ function renderPropsInner() {
     field(gk, '색', krow);
     if (c.chroma.on) slider(gk, '범위', () => c.chroma.similarity ?? 30, v => c.chroma.similarity = v, 0, 100, 1);
 
+    }
+    if (m.kind !== 'adjust') {
     const gtr = group('전환 (앞 클립에서 넘어올 때)'); gtr.classList.add('trans-group');
     c.transitionIn = c.transitionIn || { type: 'none', duration: 0.5 };
     const tchips = document.createElement('div'); tchips.className = 'chips';
@@ -1415,6 +1567,7 @@ function renderPropsInner() {
     const ab = document.createElement('button'); ab.className = 'wide'; ab.textContent = '이 전환을 트랙 전체에 적용';
     ab.onclick = () => { sel.track.clips.forEach(o => { if (o.type !== 'text') o.transitionIn = { ...c.transitionIn }; }); done(); toast('트랙 전체에 전환을 적용했어요'); };
     gtr.appendChild(ab);
+    }
   }
 
   if (m.kind === 'video') {
@@ -1424,7 +1577,13 @@ function renderPropsInner() {
     gfz.appendChild(fb);
   }
 
-  if (m.kind !== 'image') {
+  if (m.kind === 'video' || m.kind === 'audio') {
+    const rv = document.createElement('label'); rv.className = 'chk'; rv.innerHTML = '<input type="checkbox"> 거꾸로 재생 (역재생)';
+    rv.querySelector('input').checked = !!c.reverse;
+    rv.querySelector('input').onchange = ev => { c.reverse = ev.target.checked; done(); requestDraw(); };
+    const gr = group('역재생'); gr.appendChild(rv);
+  }
+  if (m.kind !== 'image' && m.kind !== 'adjust') {
     const gs = group('속도');
     const chips = document.createElement('div'); chips.className = 'chips';
     [0.25, 0.5, 1, 1.5, 2, 3, 5].forEach(v => {
@@ -1439,7 +1598,7 @@ function renderPropsInner() {
   }
   if (m.hasAudio) {
     const gv = group('소리');
-    slider(gv, '볼륨(%)', () => Math.round((c.volume ?? 1) * 100), v => c.volume = v / 100, 0, 200, 1);
+    kfSlider(gv, '볼륨(%)', 'volume', 0, 200, 1, 100);
     if (m.kind === 'video') {
       const b = document.createElement('button'); b.className = 'wide'; b.textContent = '오디오 분리 (별도 트랙으로)';
       b.onclick = () => detachAudio(sel);
@@ -1453,9 +1612,64 @@ function renderPropsInner() {
   tip.textContent = m.kind === 'audio' ? '음악이 서서히 커지고 작아집니다.' : '메인 트랙에서는 검은 화면으로, 위 트랙에서는 아래 영상과 자연스럽게 겹쳐지는(디졸브) 전환이 됩니다.';
   gt.appendChild(tip);
   if (m.kind === 'image') slider(gt, '길이(초)', () => +(c.out - c.in).toFixed(2), v => c.out = c.in + v, 0.1, 60, 0.1, { relayout: true, hardMax: 3600 });
-  const info = document.createElement('p'); info.className = 'hint';
-  info.textContent = `${m.name} · ${m.width ? m.width + '×' + m.height + ' · ' : ''}원본 ${fmt(c.in)}~${fmt(c.out)}`;
-  gt.appendChild(info);
+  if (m.kind !== 'adjust') {
+    const info = document.createElement('p'); info.className = 'hint';
+    info.textContent = `${m.name} · ${m.width ? m.width + '×' + m.height + ' · ' : ''}원본 ${fmt(c.in)}~${fmt(c.out)}`;
+    gt.appendChild(info);
+  }
+}
+
+/* ---------- 키프레임 ---------- */
+function setStatic(c, prop, v) {
+  c.transform = c.transform || { scale: 1, x: 0, y: 0, rotation: 0 };
+  if (prop === 'x' || prop === 'y' || prop === 'scale' || prop === 'rotation') c.transform[prop] = v;
+  else c[prop] = v;
+}
+function setProp(c, prop, v, local) {
+  if (!Core.hasKf(c, prop)) { setStatic(c, prop, v); return; }
+  const k = c.kf[prop];
+  const at = k.find(x => Math.abs(x.t - local) < 0.5 / project.fps);
+  if (at) at.v = v; else { k.push({ t: +local.toFixed(4), v }); k.sort((a, b) => a.t - b.t); }
+}
+function toggleKf(c, prop, local) {
+  c.kf = c.kf || {};
+  const k = c.kf[prop] = c.kf[prop] || [];
+  const i = k.findIndex(x => Math.abs(x.t - local) < 0.5 / project.fps);
+  if (i >= 0) { const v = k[i].v; k.splice(i, 1); if (!k.length) { delete c.kf[prop]; setStatic(c, prop, v); } }
+  else { k.push({ t: +local.toFixed(4), v: Core.kfValue(c, prop, local) }); k.sort((a, b) => a.t - b.t); }
+}
+function kfTimes(c) {
+  if (!c.kf) return [];
+  return [...new Set(Core.KF_PROPS.flatMap(p => (c.kf[p] || []).map(k => +k.t.toFixed(3))))].sort((a, b) => a - b);
+}
+
+async function detectScenes(sel) {
+  const c = sel.clip, m = mediaOf(c);
+  toast('장면을 찾는 중이에요… (영상 길이에 따라 시간이 걸려요)', 4000);
+  let times;
+  try { times = await API.detectScenes(m.path, c.in, c.out); } catch (e) { toast('장면을 찾지 못했어요'); return; }
+  const cuts = times.filter(st => st > c.in + 0.2 && st < c.out - 0.2).map(st => c.start + (st - c.in) / (c.speed || 1));
+  if (!cuts.length) { toast('바뀌는 장면을 찾지 못했어요'); return; }
+  for (const t of cuts.reverse()) { setSel(c.id); const cur = sel.track.clips.find(x => x.start <= t && clipEnd(x) > t && (x.id === c.id || x.mediaId === c.mediaId)); if (cur) { setSel(cur.id); splitAtSilent(t); } }
+  commit(); renderTimeline(); renderProps(); requestDraw();
+  toast(`장면 ${cuts.length + 1}개로 나눴어요`);
+}
+function splitAtSilent(t) {
+  const f = selectedId && findClip(selectedId); if (!f) return;
+  const c = f.clip; if (t <= c.start + 0.02 || t >= clipEnd(c) - 0.02) return;
+  const b = JSON.parse(JSON.stringify(c)); b.id = uid();
+  const local = t - c.start, cut = c.in + local * (c.speed || 1);
+  b.in = cut; c.out = cut; b.start = t; c.fadeOut = 0; b.fadeIn = 0; b.transitionIn = { type: 'none', duration: 0.5 };
+  if (b.kf) b.kf = shiftKf(b.kf, local);
+  f.track.clips.push(b);
+}
+function addAdjustLayer() {
+  let tr = project.tracks.find(t => t.kind === 'video' && t.name.startsWith('조정'));
+  if (!tr) { tr = { id: uid(), kind: 'video', name: '조정 레이어', clips: [] }; const i = project.tracks.findIndex(t => t.kind === 'video'); project.tracks.splice(i < 0 ? 0 : i, 0, tr); }
+  const c = { id: uid(), type: 'adjust', start: 0, duration: 5, fadeIn: 0, fadeOut: 0, filter: { preset: 'none', brightness: 0, contrast: 0, saturation: 0, blur: 0 }, color: {}, effects: [] };
+  c.start = freeSpot(tr, playhead, 5);
+  tr.clips.push(c); setSel(c.id);
+  commit(); renderAll(); toast('조정 레이어를 추가했어요. 아래 트랙 전체에 보정이 적용돼요.');
 }
 
 async function freezeFrame(sel) {
@@ -1510,7 +1724,7 @@ function detachAudio(sel) {
 /* ---------- 텍스트 / 자막 탭 ---------- */
 function selectedMediaClip() {
   const sel = selectedId && findClip(selectedId);
-  if (!sel || sel.clip.type === 'text' || sel.track.kind === 'audio') { toast('먼저 타임라인에서 영상이나 사진 클립을 선택하세요'); return null; }
+  if (!sel || sel.clip.type === 'text' || sel.clip.type === 'adjust' || sel.track.kind === 'audio') { toast('먼저 타임라인에서 영상이나 사진 클립을 선택하세요'); return null; }
   return sel;
 }
 function renderLibraries() {
@@ -1519,7 +1733,7 @@ function renderLibraries() {
   const fx = $('#libEffects'); fx.innerHTML = '';
   Core.EFFECTS.forEach(e => {
     const el = document.createElement('div'); el.className = 'lib-item' + (c && (c.effects || []).some(x => x.type === e.type) ? ' on' : '');
-    el.innerHTML = `<span class="ic">${e.icon}</span><span>${e.name}</span>`; el.title = e.hint;
+    el.classList.add('has-prev'); el.appendChild(FxPreview.canvas('effect', e.type)); el.insertAdjacentHTML('beforeend', `<span>${e.name}</span>`); el.title = e.hint;
     el.onclick = () => {
       const s = selectedMediaClip(); if (!s) return;
       const cl = s.clip; cl.effects = cl.effects || [];
@@ -1532,14 +1746,14 @@ function renderLibraries() {
   const fl = $('#libFilters'); fl.innerHTML = '';
   FILTERS.forEach(f => {
     const el = document.createElement('div'); el.className = 'lib-item' + (c && c.filter && c.filter.preset === f.id ? ' on' : '');
-    el.innerHTML = `<div class="sw" style="filter:${f.css || 'none'}"></div><span>${f.name}</span>`;
+    el.classList.add('has-prev'); el.appendChild(FxPreview.canvas('filter', f.id, f.css)); el.insertAdjacentHTML('beforeend', `<span>${f.name}</span>`);
     el.onclick = () => { const s = selectedMediaClip(); if (!s) return; s.clip.filter.preset = f.id; commit(); renderTimeline(); requestDraw(); renderProps(); renderLibraries(); };
     fl.appendChild(el);
   });
   const tl = $('#libTransitions'); tl.innerHTML = '';
   Core.TRANSITIONS.forEach(t => {
     const el = document.createElement('div'); el.className = 'lib-item' + (c && c.transitionIn && c.transitionIn.type === t.type ? ' on' : '');
-    el.innerHTML = `<span class="ic">⧓</span><span>${t.name}</span>`;
+    el.classList.add('has-prev'); el.appendChild(FxPreview.canvas('transition', t.type)); el.insertAdjacentHTML('beforeend', `<span>${t.name}</span>`);
     el.onclick = () => {
       const s = selectedMediaClip(); if (!s) return;
       s.clip.transitionIn = { type: t.type, duration: (s.clip.transitionIn && s.clip.transitionIn.duration) || 0.5 };
@@ -1631,6 +1845,7 @@ async function afterLoad(resetView = true) {
   for (const m of project.media) { m.missing = !(await API.fileExists(m.path)); if (!m.missing) { if (m.hasAudio) loadWave(m); loadStrip(m); } }
   syncRatioSelect();
   $('#selFps').value = String(project.fps);
+  $('#chkMainMagnet').checked = project.mainMagnet !== false;
   if (resetView) { setSel(null); playhead = 0; }
   if (selectedId && !findClip(selectedId)) setSel(null);
   sizeCanvas(); renderAll(); ensureProjectFonts();
@@ -1697,10 +1912,28 @@ $('#btnExport').onclick = () => {
   setPlaying(false);
   const missing = project.media.filter(m => m.missing);
   if (missing.length) { toast('찾을 수 없는 파일이 있어 내보낼 수 없어요'); return; }
-  $('#expInfo').textContent = `${project.width}×${project.height} · ${project.fps}fps · 길이 ${fmt(projDur())}`;
+  const hasIO = project.inPoint != null || project.outPoint != null;
+  $('#expRange').checked = hasIO; $('#expRange').disabled = !hasIO;
+  $('#expRange').parentElement.title = hasIO ? '' : '타임라인에서 I / O 키로 구간을 먼저 정하세요';
+  updateExpInfo();
   $('#exportForm').classList.remove('hidden'); $('#exportProgress').classList.add('hidden');
   $('#modal').classList.remove('hidden');
 };
+function expSettings() {
+  const v = $('#expSize').value; let w = project.width, h = project.height;
+  if (v.includes('x')) [w, h] = v.split('x').map(Number);
+  else if (v !== 'project') { const s = +v, short = Math.min(w, h); w = Math.round(w * s / short / 2) * 2; h = Math.round(h * s / short / 2) * 2; }
+  const fps = +$('#expFps').value || project.fps;
+  let range = null;
+  if ($('#expRange').checked) { const a = project.inPoint ?? 0, b = project.outPoint ?? projDur(); if (b - a > 0.05) range = { from: a, to: Math.min(b, projDur()) }; }
+  return { w, h, fps, range };
+}
+function updateExpInfo() {
+  const s = expSettings(), len = s.range ? s.range.to - s.range.from : projDur();
+  const fitNote = (s.w / s.h).toFixed(2) !== (project.width / project.height).toFixed(2) ? ' · 비율이 달라 빈 곳은 검은색으로 채워요' : '';
+  $('#expInfo').textContent = `${s.w}×${s.h} · ${s.fps}fps · 길이 ${fmt(len)}${s.range ? ` (${fmt(s.range.from)}~${fmt(s.range.to)})` : ''}${fitNote}`;
+}
+['#expSize', '#expFps', '#expRange'].forEach(q => $(q).addEventListener('change', updateExpInfo));
 $('#expCancel').onclick = () => $('#modal').classList.add('hidden');
 let lastExport = null;
 $('#expGo').onclick = async () => {
@@ -1710,7 +1943,7 @@ $('#expGo').onclick = async () => {
   $('#expBar').style.width = '0%'; $('#expStatus').textContent = '내보내는 중… 0%';
   const started = Date.now();
   await ensureProjectFonts();
-  const r = await API.startExport({ project, textPngs: renderTextPngs(), outPath, crf: +$('#expQuality').value, preset: $('#expPreset').value });
+  const r = await API.startExport({ project, textPngs: renderTextPngs(), outPath, crf: +$('#expQuality').value, preset: $('#expPreset').value, ...(() => { const s = expSettings(); return { outWidth: s.w !== project.width || s.h !== project.height ? s.w : 0, outHeight: s.w !== project.width || s.h !== project.height ? s.h : 0, outFps: s.fps, range: s.range }; })() });
   $('#expAbort').classList.add('hidden'); $('#expDone').classList.remove('hidden');
   if (r.ok) {
     lastExport = r.outPath; $('#expBar').style.width = '100%';
@@ -1737,6 +1970,9 @@ $('#btnSplit').onclick = () => splitAt();
 $('#btnDelete').onclick = deleteSelected;
 $('#btnDup').onclick = duplicateSelected;
 $('#btnFit').onclick = () => fitTimeline();
+$('#btnMarker').onclick = () => addMarker();
+$('#chkMainMagnet').onchange = e => { project.mainMagnet = e.target.checked; commit(); renderTimeline(); requestDraw(); if (e.target.checked) toast('메인 트랙 클립을 맨 앞부터 붙였어요'); };
+$('#btnAdjust').onclick = () => addAdjustLayer();
 $('#btnToolSelect').onclick = () => setTool('select');
 $('#btnToolBlade').onclick = () => setTool('blade');
 $('#btnSelLeft').onclick = () => selectWhere(c => c.start < playhead - 1e-6);
@@ -1799,7 +2035,9 @@ function clipMenu(e, c, tr) {
     { label: '삭제하고 빈자리 당기기', key: 'Shift+Delete', action: rippleDelete, disabled: multi },
   ];
   if (!multi && m && m.kind === 'video' && m.hasAudio && tr.kind !== 'audio') items.push('-', { label: '오디오 분리', key: 'Ctrl+Shift+S', action: detachSelectedAudio, disabled: (c.volume ?? 1) === 0 });
-  if (!multi && m && m.kind === 'video') items.push({ label: '재생헤드에 정지 화면 넣기', action: () => freezeFrame(findClip(c.id)), disabled: !inside });
+  if (!multi && m && m.kind === 'video') items.push({ label: '재생헤드에 정지 화면 넣기', action: () => freezeFrame(findClip(c.id)), disabled: !inside },
+    { label: '장면 바뀌는 곳마다 자동 분할', action: () => detectScenes(findClip(c.id)) });
+  if (!multi && m && (m.kind === 'video' || m.kind === 'audio')) items.push({ label: c.reverse ? '역재생 끄기' : '역재생 (거꾸로)', action: () => { c.reverse = !c.reverse; commit(); renderProps(); requestDraw(); } });
   if (!multi && m && m.kind !== 'image') {
     items.push('-');
     [0.5, 1, 1.5, 2].forEach(v => items.push({ label: `속도 ${v}x` + (c.speed === v ? '  ✓' : ''), action: () => setSpeed(c, v) }));
@@ -1856,6 +2094,8 @@ function nudge(dt) {
 /* ---------- 단축키 ---------- */
 const SHORTCUTS = [
   ['재생 / 정지', 'Space 또는 K'],
+  ['마커 추가 / 이전·다음 마커', 'M / Shift+, Shift+.'],
+  ['내보낼 구간 시작 / 끝 / 지우기', 'I / O / Alt+X'],
   ['선택 도구', 'A'],
   ['분할 도구 (클릭한 곳을 자르기)', 'B'],
   ['재생헤드 왼쪽 클립 모두 선택 / 오른쪽 모두 선택', '[ / ]'],
@@ -1924,6 +2164,12 @@ document.addEventListener('keydown', e => {
   else if (code === 'Space' || code === 'KeyK') setPlaying(!playing);
   else if (code === 'KeyS') splitAt();
   else if (code === 'KeyA') setTool('select');
+  else if (code === 'KeyM') addMarker();
+  else if (code === 'KeyI') setInOut('in');
+  else if (code === 'KeyO') setInOut('out');
+  else if (code === 'KeyX' && alt) setInOut('clear');
+  else if (code === 'Comma' && shift) jumpMarker(-1);
+  else if (code === 'Period' && shift) jumpMarker(1);
   else if (code === 'KeyB') setTool('blade');
   else if (code === 'BracketLeft') selectWhere(c => c.start < playhead - 1e-6);
   else if (code === 'BracketRight') selectWhere(c => clipEnd(c) > playhead + 1e-6);

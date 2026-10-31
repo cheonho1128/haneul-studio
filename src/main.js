@@ -148,6 +148,17 @@ ipcMain.handle('media:filmstrip', async (_e, p, duration) => {
   return info;
 });
 
+// 장면 전환 지점 찾기 (작게 줄여서 빠르게 분석)
+ipcMain.handle('media:scenes', async (_e, p, from, to) => {
+  const args = ['-hide_banner', '-nostats', '-ss', String(Math.max(0, from || 0))];
+  if (to) args.push('-t', String(Math.max(0.1, to - (from || 0))));
+  args.push('-i', p, '-an', '-sn', '-vf', "scale=160:-2,select='gt(scene,0.32)',showinfo", '-f', 'null', '-');
+  const txt = await new Promise(res => execFile(FFMPEG, args, { windowsHide: true, maxBuffer: 1 << 26 }, (_e2, _o, se) => res(String(se || ''))));
+  const out = [];
+  for (const m of txt.matchAll(/pts_time:([\d.]+)/g)) { const t = (from || 0) + parseFloat(m[1]); if (!out.length || t - out[out.length - 1] > 0.5) out.push(+t.toFixed(3)); }
+  return out;
+});
+
 // 정지 화면용 프레임 추출
 ipcMain.handle('media:frame', async (_e, p, t) => {
   const out = path.join(cacheDir(), `freeze_${Date.now()}.png`);
@@ -198,7 +209,7 @@ ipcMain.handle('export:choose', async () => {
   return r.canceled ? null : r.filePath;
 });
 
-ipcMain.handle('export:start', async (_e, { project, textPngs, outPath, crf, preset }) => {
+ipcMain.handle('export:start', async (_e, { project, textPngs, outPath, crf, preset, outWidth, outHeight, outFps, range }) => {
   const dir = fs.mkdtempSync(path.join(TMP, 'export_'));
   const textImages = {};
   let n = 0;
@@ -212,7 +223,7 @@ ipcMain.handle('export:start', async (_e, { project, textPngs, outPath, crf, pre
       }),
     };
   }
-  const { args, duration } = buildExportArgs(project, { outPath, textImages, crf, preset });
+  const { args, duration } = buildExportArgs(project, { outPath, textImages, crf, preset, outWidth, outHeight, outFps, range });
   return new Promise(resolve => {
     exportProc = spawn(FFMPEG, args, { windowsHide: true });
     let errTail = '';

@@ -51,7 +51,7 @@
   ];
 
   function clipDuration(c) {
-    if (c.type === 'text') return Number(c.duration) || 0;
+    if (c.type === 'text' || c.type === 'adjust') return Number(c.duration) || 0;
     return ((Number(c.out) || 0) - (Number(c.in) || 0)) / (Number(c.speed) || 1);
   }
   function clipEnd(c) { return (Number(c.start) || 0) + clipDuration(c); }
@@ -114,5 +114,46 @@
     return `curves=r='${pts[0].join(' ')}':g='${pts[1].join(' ')}':b='${pts[2].join(' ')}'`;
   }
 
-  return { COLOR_KEYS, hasColor, toneMap, toneTables, curvesFilter, FILTERS, FILTER_PRESET_FFMPEG, EFFECTS, TRANSITIONS, TEXT_ANIMS, clipDuration, clipEnd, projectDuration, transitionPlan };
+  /* ----- 키프레임 ----- */
+  const KF_PROPS = ['x', 'y', 'scale', 'rotation', 'opacity', 'volume'];
+  function staticVal(c, prop) {
+    const tf = c.transform || {};
+    if (prop === 'x') return Number(tf.x) || 0;
+    if (prop === 'y') return Number(tf.y) || 0;
+    if (prop === 'scale') return tf.scale ?? 1;
+    if (prop === 'rotation') return Number(tf.rotation) || 0;
+    if (prop === 'opacity') return c.opacity ?? 1;
+    if (prop === 'volume') return c.volume ?? 1;
+    return 0;
+  }
+  function hasKf(c, prop) { return !!(c.kf && c.kf[prop] && c.kf[prop].length); }
+  function anyKf(c) { return !!c.kf && KF_PROPS.some(p => hasKf(c, p)); }
+  function ease(p, e) { return e === 'smooth' ? p * p * (3 - 2 * p) : p; }
+  /** 클립 안 시간(local)에서의 값 */
+  function kfValue(c, prop, local) {
+    if (!hasKf(c, prop)) return staticVal(c, prop);
+    const k = c.kf[prop];
+    if (local <= k[0].t) return k[0].v;
+    for (let i = 1; i < k.length; i++) {
+      if (local < k[i].t) { const a = k[i - 1], b = k[i], p = (local - a.t) / Math.max(1e-6, b.t - a.t); return a.v + (b.v - a.v) * ease(p, a.ease); }
+    }
+    return k[k.length - 1].v;
+  }
+  /** ffmpeg 표현식 (tv: 시간 변수 이름, mul: 곱할 값) */
+  function kfExpr(c, prop, tv, mul = 1, add = 0) {
+    const f = v => (v * mul + add).toFixed(5);
+    if (!hasKf(c, prop)) return f(staticVal(c, prop));
+    const k = c.kf[prop];
+    let e = f(k[k.length - 1].v);
+    for (let i = k.length - 1; i >= 1; i--) {
+      const a = k[i - 1], b = k[i];
+      const p = `((${tv}-${a.t.toFixed(4)})/${Math.max(1e-4, b.t - a.t).toFixed(4)})`;
+      const pe = a.ease === 'smooth' ? `(${p}*${p}*(3-2*${p}))` : p;
+      e = `if(lt(${tv},${b.t.toFixed(4)}),${f(a.v)}+(${f(b.v)}-${f(a.v)})*${pe},${e})`;
+    }
+    return `if(lt(${tv},${k[0].t.toFixed(4)}),${f(k[0].v)},${e})`;
+  }
+  function kfMax(c, prop) { return hasKf(c, prop) ? Math.max(...c.kf[prop].map(k => k.v)) : staticVal(c, prop); }
+
+  return { KF_PROPS, hasKf, anyKf, kfValue, kfExpr, kfMax, staticVal, COLOR_KEYS, hasColor, toneMap, toneTables, curvesFilter, FILTERS, FILTER_PRESET_FFMPEG, EFFECTS, TRANSITIONS, TEXT_ANIMS, clipDuration, clipEnd, projectDuration, transitionPlan };
 });

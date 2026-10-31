@@ -1,7 +1,7 @@
 // FFmpeg 명령 생성기: 프로젝트(JSON)를 ffmpeg 인자 배열로 변환한다.
 'use strict';
 const core = require('./renderer/core.js');
-const { clipDuration, projectDuration, transitionPlan, FILTER_PRESET_FFMPEG, hasColor, curvesFilter } = core;
+const { clipDuration, projectDuration, transitionPlan, FILTER_PRESET_FFMPEG, hasColor, curvesFilter, hasKf, kfExpr, kfMax } = core;
 
 function num(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? n : d; }
 function f3(v) { return num(v).toFixed(3); }
@@ -72,6 +72,25 @@ function buildExportArgs(project, opts) {
       if (fadeIn > 0) fadeF.push(`fade=t=in:st=0:d=${f3(fadeIn)}:alpha=1`);
       if (fadeOut > 0) fadeF.push(`fade=t=out:st=${f3(dur - fadeOut)}:d=${f3(fadeOut)}:alpha=1`);
 
+      if (c.type === 'adjust') {
+        if (track.hidden) continue;
+        const ch = [...colorFilters(c.filter)];
+        if (hasColor(c.color)) { ch.push(curvesFilter(c.color)); if (num(c.color.vibrance)) ch.push(`vibrance=intensity=${(num(c.color.vibrance) / 100).toFixed(3)}`); }
+        if (c.color && c.color.lut && c.color.lut.path) ch.push(`lut3d=file='${c.color.lut.path.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, '')}'`);
+        if (hasEffect(c, 'invert')) ch.push('negate');
+        if (hasEffect(c, 'grain')) ch.push(`noise=alls=${Math.round(8 + 40 * effectAmount(c, 'grain'))}:allf=t+u`);
+        if (hasEffect(c, 'vignette')) ch.push(`vignette=a=${(0.25 + 0.6 * effectAmount(c, 'vignette')).toFixed(3)}`);
+        if (hasEffect(c, 'pixelate')) { const kf = 4 + effectAmount(c, 'pixelate') * 40; ch.push(`scale=${even(W / kf)}:${even(H / kf)}`, `scale=${W}:${H}:flags=neighbor`); }
+        if (hasEffect(c, 'rgbSplit')) ch.push('format=rgba', `rgbashift=rh=-${Math.max(1, Math.round((2 + 18 * effectAmount(c, 'rgbSplit')) * W / 1920))}:bh=${Math.max(1, Math.round((2 + 18 * effectAmount(c, 'rgbSplit')) * W / 1920))}`);
+        if (!ch.length) continue;
+        const a = `aj${ov}a`, b = `aj${ov}b`, cc = `aj${ov}c`;
+        filters.push(`[${last}]split[${a}][${b}]`);
+        filters.push(`[${b}]${ch.join(',')},format=rgba,trim=start=${f3(start)}:end=${f3(start + dur)}${fadeIn > 0 ? `,fade=t=in:st=${f3(start)}:d=${f3(fadeIn)}:alpha=1` : ''}${fadeOut > 0 ? `,fade=t=out:st=${f3(start + dur - fadeOut)}:d=${f3(fadeOut)}:alpha=1` : ''}[${cc}]`);
+        filters.push(`[${a}][${cc}]overlay=eof_action=pass:enable='between(t,${f3(start)},${f3(start + dur)})'[o${ov}]`);
+        last = `o${ov++}`;
+        continue;
+      }
+
       if (c.type === 'text') {
         const ti = opts.textImages && opts.textImages[c.id];
         if (!ti || track.hidden) continue;
@@ -119,12 +138,14 @@ function buildExportArgs(project, opts) {
 
       if (!track.hidden && m.kind !== 'audio') {
         const tr = c.transform || {};
-        const scale = num(tr.scale, 1);
+        const kfS = hasKf(c, 'scale'), kfR = hasKf(c, 'rotation'), kfO = hasKf(c, 'opacity');
+        const sMax = kfS ? Math.min(Math.max(0.05, kfMax(c, 'scale')), 4) : num(tr.scale, 1);
+        const scale = sMax;
         const mw = num(m.width, W), mh = num(m.height, H);
         const fit = Math.min(W / mw, H / mh) * scale;
         const w = even(mw * fit), h = even(mh * fit);
         const chain = [];
-        if (m.kind !== 'image') chain.push(`setpts=(PTS-STARTPTS)/${speed.toFixed(4)}`);
+        if (m.kind !== 'image') chain.push(...(c.reverse ? ['reverse'] : []), `setpts=(PTS-STARTPTS)/${speed.toFixed(4)}`);
         chain.push(`fps=${FPS}`);
         // 모자이크
         const pix = effectAmount(c, 'pixelate');
@@ -169,15 +190,22 @@ function buildExportArgs(project, opts) {
         }
         if (hasEffect(c, 'mirror')) chain.push('hflip');
         if (hasEffect(c, 'flipV')) chain.push('vflip');
+        if (kfO) chain.push(`geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*max(0,min(1,${kfExpr(c, 'opacity', 'T')}))'`);
+        else if (num(c.opacity, 1) < 1) chain.push(`colorchannelmixer=aa=${num(c.opacity, 1).toFixed(3)}`);
         const rot = num(tr.rotation);
-        if (rot) { const r = (rot * Math.PI / 180).toFixed(5); chain.push(`rotate=${r}:ow=rotw(${r}):oh=roth(${r}):c=none`); }
-        if (num(c.opacity, 1) < 1) chain.push(`colorchannelmixer=aa=${num(c.opacity, 1).toFixed(3)}`);
+        if (kfR) chain.push(`rotate=a='${kfExpr(c, 'rotation', 't', Math.PI / 180)}':ow='hypot(iw,ih)':oh='hypot(iw,ih)':c=none`);
+        else if (rot) { const r = (rot * Math.PI / 180).toFixed(5); chain.push(`rotate=${r}:ow=rotw(${r}):oh=roth(${r}):c=none`); }
         chain.push(...fadeF);
         if (extend > 0) chain.push(`tpad=stop_mode=clone:stop_duration=${f3(extend)}`);
+        if (kfS) {
+          const se = `(${kfExpr(c, 'scale', 't')})/${sMax.toFixed(4)}`;
+          chain.push(`scale=w='max(2,trunc(iw*${se}/2)*2)':h='max(2,trunc(ih*${se}/2)*2)':eval=frame`);
+        }
         chain.push(`setpts=PTS-STARTPTS+${f3(start)}/TB`);
         filters.push(`[${k}:v]${chain.join(',')}[v${k}]`);
-        let x = `(main_w-overlay_w)/2+${(num(tr.x) * W).toFixed(1)}`;
-        let y = `(main_h-overlay_h)/2+${(num(tr.y) * H).toFixed(1)}`;
+        const lt = `(t-${f3(start)})`;
+        let x = `(main_w-overlay_w)/2+${hasKf(c, 'x') ? `(${kfExpr(c, 'x', lt, W)})` : (num(tr.x) * W).toFixed(1)}`;
+        let y = `(main_h-overlay_h)/2+${hasKf(c, 'y') ? `(${kfExpr(c, 'y', lt, H)})` : (num(tr.y) * H).toFixed(1)}`;
         if (hasEffect(c, 'shake')) {
           const amp = ((0.004 + 0.03 * effectAmount(c, 'shake')) * W).toFixed(1);
           x += `+${amp}*sin(t*37)`; y += `+${amp}*cos(t*29)`;
@@ -211,7 +239,9 @@ function buildExportArgs(project, opts) {
     }
   }
 
-  filters.push(`[${last}]format=yuv420p[vout]`);
+  const OW = opts.outWidth ? even(opts.outWidth) : W, OH = opts.outHeight ? even(opts.outHeight) : H;
+  const outScale = (OW !== W || OH !== H) ? `scale=${OW}:${OH}:force_original_aspect_ratio=decrease,pad=${OW}:${OH}:(ow-iw)/2:(oh-ih)/2:color=black,` : '';
+  filters.push(`[${last}]${outScale}format=yuv420p[vout]`);
 
   if (audioLabels.length) {
     filters.push(`${audioLabels.map(l => `[${l}]`).join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,apad,atrim=0:${f3(total)}[aout]`);
@@ -224,18 +254,20 @@ function buildExportArgs(project, opts) {
     '-filter_complex', filters.join(';'),
     '-map', '[vout]', '-map', '[aout]',
     '-c:v', 'libx264', '-preset', opts.preset || 'medium', '-crf', String(opts.crf || 20),
-    '-r', String(FPS), '-pix_fmt', 'yuv420p',
+    '-r', String(opts.outFps || FPS), '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
-    '-t', f3(total), '-movflags', '+faststart',
+    ...(opts.range ? ['-ss', f3(opts.range.from), '-t', f3(opts.range.to - opts.range.from)] : ['-t', f3(total)]),
+    '-movflags', '+faststart',
     '-progress', 'pipe:1', '-nostats',
     opts.outPath];
-  return { args, duration: total };
+  return { args, duration: opts.range ? opts.range.to - opts.range.from : total };
 }
 
 function audioChain(filters, k, c, speed, dur, start) {
-  const chain = ['asetpts=PTS-STARTPTS', 'aresample=48000', 'aformat=channel_layouts=stereo', ...atempoChain(speed), `atrim=0:${f3(dur)}`];
+  const chain = [...(c.reverse ? ['areverse'] : []), 'asetpts=PTS-STARTPTS', 'aresample=48000', 'aformat=channel_layouts=stereo', ...atempoChain(speed), `atrim=0:${f3(dur)}`];
   const vol = num(c.volume, 1);
-  if (Math.abs(vol - 1) > 1e-3) chain.push(`volume=${vol.toFixed(3)}`);
+  if (hasKf(c, 'volume')) chain.push(`volume='max(0,${kfExpr(c, 'volume', 't')})':eval=frame`);
+  else if (Math.abs(vol - 1) > 1e-3) chain.push(`volume=${vol.toFixed(3)}`);
   const ai = Math.min(num(c.audioFadeIn ?? c.fadeIn), dur / 2), ao = Math.min(num(c.audioFadeOut ?? c.fadeOut), dur / 2);
   if (ai > 0) chain.push(`afade=t=in:st=0:d=${f3(ai)}`);
   if (ao > 0) chain.push(`afade=t=out:st=${f3(dur - ao)}:d=${f3(ao)}`);

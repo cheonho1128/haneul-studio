@@ -60,7 +60,7 @@
       <p class="hint">템플릿을 클릭하면 재생헤드 위치에 텍스트가 추가됩니다.</p>
       <div id="textPresets"></div>
     </section>
-    <section class="tab hidden" id="tab-effects"><p class="hint">클립을 선택한 뒤 효과를 누르면 적용돼요. 다시 누르면 빠져요.</p><div class="lib-grid" id="libEffects"></div></section>
+    <section class="tab hidden" id="tab-effects"><button id="btnAdjust" class="wide primary-outline">＋ 조정 레이어 추가</button><p class="hint">클립을 선택한 뒤 효과를 누르면 적용돼요. 다시 누르면 빠져요.</p><div class="lib-grid" id="libEffects"></div></section>
     <section class="tab hidden" id="tab-filters"><p class="hint">선택한 클립에 필터를 입혀요.</p><div class="lib-grid" id="libFilters"></div></section>
     <section class="tab hidden" id="tab-transitions"><p class="hint">선택한 클립과 바로 앞 클립 사이에 전환을 넣어요.</p><div class="lib-grid" id="libTransitions"></div></section>
     <section class="tab hidden" id="tab-captions">
@@ -101,6 +101,7 @@
     <span class="sep"></span>
     <button id="btnSplit" title="재생헤드에서 분할 (S)">⫶ 분할</button>
     <button id="btnDelete" title="삭제 (Delete)">🗑</button>
+    <button id="btnMarker" title="마커 추가 (M)">🚩</button>
     <button id="btnFit" title="화면에 맞게 보기 (Shift+Z)">↔</button>
     <button id="btnDup" title="복제 (Ctrl+D)">⧉</button>
     <button id="btnTrimL" title="재생헤드 왼쪽 잘라내기 (Q)">⇤ 앞</button>
@@ -110,6 +111,7 @@
     <button id="btnAddTextTrack" title="텍스트 트랙 추가">＋텍스트</button>
     <button id="btnAddAudioTrack" title="오디오 트랙 추가">＋오디오</button>
     <span class="spacer"></span>
+    <label class="chk" title="메인 트랙의 클립이 빈틈 없이 맨 앞부터 붙어요 (캡컷 방식)"><input type="checkbox" id="chkMainMagnet" checked> 메인 자석</label>
     <label class="chk"><input type="checkbox" id="chkSnap" checked> 자석</label>
     <label title="타임라인 확대">🔍 <input type="range" id="zoom" min="4" max="400" value="60"></label>
   </div>
@@ -129,6 +131,26 @@
   <div class="dialog">
     <h3>동영상 내보내기</h3>
     <div id="exportForm">
+      <label>해상도
+        <select id="expSize">
+          <option value="project" selected>프로젝트 크기</option>
+          <option value="2160">4K (2160p)</option>
+          <option value="1080">1080p (FHD)</option>
+          <option value="720">720p (HD)</option>
+          <option value="480">480p</option>
+          <option value="1920x1080">유튜브 (1920×1080)</option>
+          <option value="1080x1920">쇼츠·릴스·틱톡 (1080×1920)</option>
+          <option value="1080x1350">인스타 피드 (1080×1350)</option>
+          <option value="1080x1080">정사각형 (1080×1080)</option>
+        </select>
+      </label>
+      <label>프레임 (FPS)
+        <select id="expFps">
+          <option value="" selected>프로젝트 설정</option>
+          <option value="24">24</option><option value="25">25</option><option value="30">30</option><option value="60">60</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="expRange"> 시작(I)~끝(O) 구간만 내보내기</label>
       <label>화질
         <select id="expQuality">
           <option value="18">최고 (파일 큼)</option>
@@ -179,6 +201,7 @@
 <div id="toast" class="hidden"></div>
 <script src="core.js"></script>
 <script src="fonts.js"></script>
+<script src="fxpreview.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
