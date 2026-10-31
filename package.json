@@ -1,7 +1,7 @@
 {
   "name": "haneul-studio",
   "productName": "Haneul Studio",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "하늘 스튜디오 - 윈도우용 영상 편집기",
   "main": "src/boot.js",
   "author": "Haneul Studio",

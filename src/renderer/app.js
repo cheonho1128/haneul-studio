@@ -673,7 +673,7 @@ function draw() {
       if (c.type === 'adjust') {
         if (tr.hidden) continue;
         const snap = fxCanvas(9, W, H); snap.getContext('2d').drawImage(canvas, 0, 0);
-        drawMediaClip(snap, { ...c, transform: { scale: 1, x: 0, y: 0, rotation: 0 }, kf: null }, { width: W, height: H }, W, H, t, local, dur, {}, fadeAlpha({ ...c, kf: null }, local, dur));
+        drawMediaClip(snap, Core.effClip({ ...c, transform: { scale: 1, x: 0, y: 0, rotation: 0 } }, {}), { width: W, height: H }, W, H, t, local, dur, {}, fadeAlpha(c, local, dur));
         continue;
       }
       const m = mediaOf(c); if (!m) continue;
@@ -886,17 +886,22 @@ function renderTimeline() {
   drawRuler(); updatePlayhead(); renderMarkers();
 }
 
+function fxSegLabel(c) {
+  const fx = (c.effects || []).map(e => (Core.EFFECTS.find(x => x.type === e.type) || {}).name || e.type);
+  if (c.fxSeg || (fx.length && (!c.filter || c.filter.preset === 'none') && !Core.hasColor(c.color))) return fx.length ? '✨ ' + fx.join(' · ') : '✨ 효과';
+  return '◐ 조정 레이어' + (fx.length ? ' · ' + fx.join(' · ') : '');
+}
 function renderClip(c, tr) {
   const el = document.createElement('div');
   const m = c.type === 'text' ? null : mediaOf(c);
   const kind = c.type === 'text' ? 'text' : c.type === 'adjust' ? 'adjust' : (tr.kind === 'audio' ? 'audio' : (m ? m.kind : 'video'));
-  el.className = `clip ${kind}` + (isSel(c.id) ? ' selected' : '');
+  el.className = `clip ${kind}` + (isSel(c.id) ? ' selected' : '') + (c.type === 'adjust' && fxSegLabel(c).startsWith('✨') ? ' fxseg' : '');
   el.style.left = c.start * pxPerSec + 'px';
   const wpx = Math.max(4, clipDur(c) * pxPerSec);
   el.style.width = wpx + 'px';
   el.dataset.id = c.id;
   const label = document.createElement('div'); label.className = 'label';
-  label.textContent = c.type === 'text' ? c.text.replace(/\n/g, ' ') : c.type === 'adjust' ? '◐ 조정 레이어' : (m ? m.name : '(없는 파일)');
+  label.textContent = c.type === 'text' ? c.text.replace(/\n/g, ' ') : c.type === 'adjust' ? fxSegLabel(c) : (m ? m.name : '(없는 파일)');
   el.appendChild(label);
   const badges = [];
   if (c.speed && c.speed !== 1) badges.push(`${c.speed}x`);
@@ -963,25 +968,44 @@ function renderClip(c, tr) {
 /** 같은 영상 트랙에서 붙어 있는 클립 사이에 전환 버튼 표시 */
 function renderTransitionMarkers(tr, row) {
   if (tr.kind !== 'video') return;
-  const clips = tr.clips.slice().sort((a, b) => a.start - b.start);
-  for (let i = 1; i < clips.length; i++) {
-    const a = clips[i - 1], b = clips[i];
-    if (Math.abs(clipEnd(a) - b.start) > 0.05) continue;
+  const clips = tr.clips.filter(c => c.type !== 'text' && c.type !== 'adjust').sort((a, b) => a.start - b.start);
+  clips.forEach((b, i) => {
+    const a = i > 0 ? clips[i - 1] : null;
+    const joined = a && Math.abs(clipEnd(a) - b.start) <= 0.05;
     const t = b.transitionIn && b.transitionIn.type !== 'none' ? b.transitionIn : null;
-    const mk = document.createElement('button');
-    mk.className = 'tmark' + (t ? ' on' : '');
-    mk.title = t ? `전환: ${Core.TRANSITIONS.find(x => x.type === t.type)?.name} (클릭해서 변경)` : '전환 효과 넣기';
-    mk.textContent = t ? '⧓' : '+';
-    mk.style.left = b.start * pxPerSec + 'px';
+    if (!t && !joined) return;
+    const def = t && Core.TRANSITIONS.find(x => x.type === t.type);
+    const mk = document.createElement('div');
+    if (t) {
+      const d = Math.max(0.1, t.duration || 0.5);
+      mk.className = 'tblock' + (isSel(b.id) && propTab[$('#propTitle').textContent] === 'trans' ? ' sel' : '');
+      mk.style.left = (b.start - (joined ? d / 2 : 0)) * pxPerSec + 'px';
+      mk.style.width = Math.max(16, d * pxPerSec) + 'px';
+      mk.innerHTML = '<span>⧓</span>';
+      mk.title = `전환: ${def ? def.name : t.type} · ${d.toFixed(1)}초 (클릭: 바꾸기, 우클릭: 지우기, 끝을 끌면 길이 조절)`;
+      const hd = document.createElement('i'); hd.className = 'th';
+      hd.addEventListener('pointerdown', e => {
+        e.stopPropagation(); e.preventDefault();
+        const x0 = e.clientX, d0 = d;
+        const mv = ev => { t.duration = +clamp(d0 + (ev.clientX - x0) / pxPerSec * (joined ? 2 : 1), 0.1, 3).toFixed(2); mk.style.width = Math.max(16, t.duration * pxPerSec) + 'px'; if (joined) mk.style.left = (b.start - t.duration / 2) * pxPerSec + 'px'; requestDraw(); };
+        const up = () => { window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); commit(); renderTimeline(); renderProps(); };
+        window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+      });
+      mk.appendChild(hd);
+      mk.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); showMenu(e.clientX, e.clientY, [{ label: '전환 지우기', action: () => { b.transitionIn = { type: 'none', duration: d }; commit(); renderTimeline(); renderProps(); requestDraw(); } }, { label: '전환 미리 보기', action: () => { seek(Math.max(0, b.start - 0.8)); setPlaying(true); } }]); });
+    } else {
+      mk.className = 'tmark'; mk.textContent = '+'; mk.title = '전환 넣기';
+      mk.style.left = b.start * pxPerSec + 'px';
+    }
     mk.addEventListener('pointerdown', e => e.stopPropagation());
     mk.onclick = e => {
       e.stopPropagation();
       if (!b.transitionIn || b.transitionIn.type === 'none') { b.transitionIn = { type: 'dissolve', duration: 0.5 }; commit(); }
-      setSel(b.id); renderTimeline(); renderProps(); requestDraw();
-      document.querySelector('#props .trans-group')?.scrollIntoView({ block: 'start' });
+      setSel(b.id); propTab[mediaOf(b) && mediaOf(b).kind === 'image' ? '사진' : '영상'] = 'trans';
+      renderTimeline(); renderProps(); requestDraw();
     };
     row.appendChild(mk);
-  }
+  });
 }
 
 /** 여러 클립을 함께 옮기기 */
@@ -1394,7 +1418,7 @@ function renderPropsInner() {
   if (!sel) { $('#propTitle').textContent = '속성'; box.innerHTML = '<p class="hint">타임라인에서 클립을 선택하면 여기서 편집할 수 있어요.<br><br>단축키는 F1 키나 위쪽의 ⌨ 단축키 버튼으로 볼 수 있어요.</p>'; return; }
   const c = sel.clip;
   const m = c.type === 'text' ? null : c.type === 'adjust' ? { kind: 'adjust', name: '조정 레이어' } : mediaOf(c);
-  $('#propTitle').textContent = c.type === 'text' ? '텍스트' : m.kind === 'adjust' ? '조정 레이어' : m.kind === 'audio' ? '오디오' : m.kind === 'image' ? '사진' : '영상';
+  $('#propTitle').textContent = c.type === 'text' ? '텍스트' : m.kind === 'adjust' ? (fxSegLabel(c).startsWith('✨') ? '효과 구간' : '조정 레이어') : m.kind === 'audio' ? '오디오' : m.kind === 'image' ? '사진' : '영상';
   c.filter = c.filter || (c.type !== 'text' ? { preset: 'none', brightness: 0, contrast: 0, saturation: 0, blur: 0 } : c.filter);
   const live = () => { requestDraw(); };
   const done = () => { commit(); renderTimeline(); renderCaptions(); };
@@ -1877,44 +1901,83 @@ function playPreviewSound(file) {
 
 /* ---------- 효과·전환 끌어다 놓기 ---------- */
 let dragFx = null;
-/** 놓을 위치의 클립 (전환은 가까운 클립 경계의 뒤쪽 클립) */
-function fxTargetAt(e, tr, row) {
-  const t = (e.clientX - row.getBoundingClientRect().left) / pxPerSec;
-  const clips = tr.clips.filter(c => c.type !== 'text').sort((a, b) => a.start - b.start);
-  if (dragFx.kind === 'effect') {
-    const c = clips.find(c => t >= c.start && t < clipEnd(c));
-    return c && !(mediaOf(c) && mediaOf(c).kind === 'audio') ? c : null;
-  }
+const dropTime = e => Math.max(0, (e.clientX - innerEl.getBoundingClientRect().left) / pxPerSec);
+/** 전환을 넣을 클립: 놓은 곳에서 가장 가까운 '클립과 클립이 붙은 곳'의 뒤 클립 */
+function transitionTarget(tr, t) {
   if (tr.kind !== 'video') return null;
+  const clips = tr.clips.filter(c => c.type !== 'text' && c.type !== 'adjust').sort((a, b) => a.start - b.start);
   let best = null, bd = Infinity;
-  for (const c of clips) { if (c.type === 'adjust') continue; const d = Math.abs(t - c.start); if (d < bd) { bd = d; best = c; } }
-  // 클립 안쪽 깊숙이 놓으면 그 클립의 시작 부분에 넣기
-  const inside = clips.find(c => t >= c.start && t < clipEnd(c) && c.type !== 'adjust');
-  if (inside && (bd * pxPerSec > 60)) best = inside;
-  return best;
+  for (let i = 1; i < clips.length; i++) {
+    if (Math.abs(clipEnd(clips[i - 1]) - clips[i].start) > 0.05) continue;
+    const d = Math.abs(t - clips[i].start); if (d < bd) { bd = d; best = clips[i]; }
+  }
+  if (best) return best;
+  return clips.find(c => t >= c.start && t < clipEnd(c)) || null;   // 붙은 곳이 없으면 그 클립 시작(검은 화면에서 등장)
 }
-function fxDropTarget(c) {
-  document.querySelectorAll('.clip.fx-drop, .clip.fx-drop-start').forEach(x => x.classList.remove('fx-drop', 'fx-drop-start'));
-  if (!c) return;
-  const el = document.querySelector(`.clip[data-id="${c.id}"]`);
-  if (el) el.classList.add(dragFx && dragFx.kind === 'transition' ? 'fx-drop-start' : 'fx-drop');
+/** 효과를 놓을 자리: 효과 구간 위면 그 구간, 아니면 새 구간 (시작 시간·길이) */
+function effectTarget(tr, t) {
+  const seg = tr.clips.find(c => c.type === 'adjust' && t >= c.start && t < clipEnd(c));
+  if (seg) return { seg };
+  const under = project.tracks.filter(x => x.kind === 'video' && !x.hidden).flatMap(x => x.clips).find(c => c.type !== 'adjust' && t >= c.start && t < clipEnd(c));
+  const len = under ? Math.max(1, Math.min(3, clipEnd(under) - t)) : 3;
+  return { start: +t.toFixed(3), len };
 }
+function fxGhost(row, from, len, label) {
+  document.querySelectorAll('.fx-ghost').forEach(x => x.remove());
+  document.querySelectorAll('.clip.fx-drop').forEach(x => x.classList.remove('fx-drop'));
+  if (!row) return;
+  const g = document.createElement('div'); g.className = 'fx-ghost';
+  g.style.left = from * pxPerSec + 'px'; g.style.width = Math.max(14, len * pxPerSec) + 'px'; g.textContent = label;
+  row.appendChild(g);
+}
+function fxDropTarget(c) { if (!c) fxGhost(null); }
 function fxDragOver(e, tr, row) {
-  const c = fxTargetAt(e, tr, row);
-  fxDropTarget(c);
-  if (c) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
+  const t = dropTime(e);
+  if (dragFx.kind === 'transition') {
+    const c = transitionTarget(tr, t);
+    if (!c) { fxGhost(null); return; }
+    const d = (c.transitionIn && c.transitionIn.type !== 'none' && c.transitionIn.duration) || 0.5;
+    fxGhost(row, c.start - d / 2, d, '⧓');
+  } else {
+    if (tr.kind === 'audio' || tr.kind === 'text') { fxGhost(null); return; }
+    const tg = effectTarget(tr, t);
+    if (tg.seg) { fxGhost(null); document.querySelector(`.clip[data-id="${tg.seg.id}"]`)?.classList.add('fx-drop'); }
+    else fxGhost(row, tg.start, tg.len, '✨ ' + dragFx.name);
+  }
+  e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+}
+function effectsTrack() {
+  let tr = project.tracks.find(t => t.fxTrack);
+  if (!tr) {
+    tr = { id: uid(), kind: 'video', name: '효과', fxTrack: true, clips: [] };
+    const i = project.tracks.findIndex(t => t.kind === 'video');
+    project.tracks.splice(i < 0 ? 0 : i, 0, tr);
+  }
+  return tr;
 }
 function fxDrop(e, tr, row) {
-  const c = fxTargetAt(e, tr, row);
-  const f = dragFx; dragFx = null; fxDropTarget(null); document.body.classList.remove('fx-dragging');
-  if (!c || !f) return;
-  if (f.kind === 'effect') {
-    if (!(c.effects || []).some(x => x.type === f.type)) toggleEffect(c, f.type);
-  } else setTransition(c, f.type);
-  setSel(c.id);
+  const f = dragFx; dragFx = null; fxGhost(null); document.body.classList.remove('fx-dragging');
+  if (!f) return;
+  const t = dropTime(e);
+  let target;
+  if (f.kind === 'transition') {
+    target = transitionTarget(tr, t); if (!target) return;
+    setTransition(target, f.type);
+  } else {
+    if (tr.kind === 'audio' || tr.kind === 'text') return;
+    const tg = effectTarget(tr, t);
+    if (tg.seg) { target = tg.seg; if (!(target.effects || []).some(x => x.type === f.type)) toggleEffect(target, f.type); }
+    else {
+      const ft = tr.fxTrack ? tr : effectsTrack();
+      target = { id: uid(), type: 'adjust', fxSeg: true, start: 0, duration: tg.len, fadeIn: 0, fadeOut: 0, filter: { preset: 'none', brightness: 0, contrast: 0, saturation: 0, blur: 0 }, color: {}, effects: [{ type: f.type, amount: 50 }] };
+      target.start = freeSpot(ft, tg.start, tg.len);
+      ft.clips.push(target);
+    }
+  }
+  setSel(target.id);
   commit(); renderTimeline(); renderProps(); requestDraw();
-  toast(f.kind === 'effect' ? `효과 '${f.name}'를 넣었어요` : `전환 '${f.name}'을 넣었어요`);
-  if (f.kind === 'transition') { seek(Math.max(0, c.start - 0.8)); setPlaying(true); }
+  toast(f.kind === 'effect' ? `효과 '${f.name}'를 ${fmt(target.start)}에 넣었어요. 끝을 끌어서 길이를 바꿀 수 있어요.` : `전환 '${f.name}'을 넣었어요`, 3500);
+  seek(Math.max(0, target.start - (f.kind === 'transition' ? 0.8 : 0))); setPlaying(true);
 }
 
 /* ---------- 효과·전환 미리보기 목록 ---------- */

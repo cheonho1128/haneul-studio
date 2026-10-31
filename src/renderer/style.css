@@ -181,7 +181,7 @@ body.blade-mode .clip, body.blade-mode .clip *, body.blade-mode .track { cursor:
 .lib-item:hover { border-color: var(--accent); }
 .lib-item.on { border-color: var(--accent); background: #1f2a36; }
 
-.clip.adjust { background: repeating-linear-gradient(45deg, #5b4a8a, #5b4a8a 8px, #4d3f78 8px, #4d3f78 16px); }
+.clip.adjust { background-color: #5b4a8a; background-image: repeating-linear-gradient(45deg, #5b4a8a, #5b4a8a 8px, #4d3f78 8px, #4d3f78 16px) !important; }
 .prop.with-kf { grid-template-columns: 70px 1fr 54px 24px; }
 .kf-btn { padding: 0; width: 24px; height: 24px; font-size: 12px; color: var(--muted); }
 .kf-btn.has { color: #b9a14f; }
@@ -238,3 +238,9 @@ button.small { padding: 2px 8px; font-size: 11.5px; }
 .gh-body input[type=text], .gh-body input[type=password] { width: 100%; box-sizing: border-box; text-align: left; }
 .gh-bar { margin-top: 8px; }
 .gh-bar div { height: 100%; width: 0; background: var(--accent2); transition: width .2s; }
+.tblock { position: absolute; top: 3px; bottom: 3px; z-index: 4; border-radius: 4px; background: rgba(40, 170, 190, .85); border: 2px solid #e9fbff; box-shadow: 0 0 0 1px rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; cursor: pointer; color: #fff; font-size: 13px; text-shadow: 0 1px 2px #000; box-sizing: border-box; }
+.tblock:hover, .tblock.sel { background: rgba(40, 190, 210, 1); border-color: #ffd84f; }
+.tblock .th { position: absolute; right: -3px; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
+.fx-ghost { position: absolute; top: 3px; bottom: 3px; z-index: 5; border: 2px dashed #ffd84f; border-radius: 5px; background: rgba(255, 216, 79, .2); color: #ffd84f; font-size: 11px; padding: 2px 5px; overflow: hidden; white-space: nowrap; pointer-events: none; box-sizing: border-box; }
+.clip.adjust.fxseg { background-color: #8a52d0; background-image: linear-gradient(135deg, #7a4fc9, #b05bd6) !important; }
+.clip.fxseg .label { color: #fff; font-weight: bold; }

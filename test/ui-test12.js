@@ -1,0 +1,34 @@
+const { _electron: electron } = require('playwright');
+const path = require('path');
+const F = p => path.join(__dirname, 'fixtures', p);
+(async () => {
+  const app = await electron.launch({ executablePath: require(path.join(__dirname, '..', 'node_modules', 'electron')), args: ['.', '--no-sandbox'], cwd: path.join(__dirname, '..') });
+  const win = await app.firstWindow();
+  const errors = []; win.on('pageerror', e => errors.push(String(e))); win.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  await win.waitForTimeout(1000);
+  await win.evaluate(async (fx) => { await window.__studio.importPaths([fx.s, fx.a, fx.s]); }, { s: F('scenes.mp4'), a: F('a.mp4') });
+  await win.waitForTimeout(500);
+  await win.evaluate(() => document.querySelectorAll('.media-item').forEach(el => el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))));
+  await win.waitForTimeout(1200);
+  const state = () => win.evaluate(() => JSON.stringify(window.__studio.project.tracks.map(t => [t.name, t.clips.slice().sort((a, b) => a.start - b.start).map(c => [+c.start.toFixed(2), c.type === 'adjust' ? c.duration : '', (c.effects || []).map(e => e.type).join('+'), c.transitionIn && c.transitionIn.type])]).filter(x => x[1].length)));
+  const mainRow = await win.evaluate(() => { const tr = window.__studio.project.tracks.find(t => t.main); const r = document.querySelector(`.track[data-id="${tr.id}"]`).getBoundingClientRect(); return { x: r.left, y: r.top + r.height / 2 }; });
+  console.log('row', mainRow, await state());
+  await win.click('[data-tab="effects"]');
+  const tile = win.locator('#libEffects .fx-tile', { hasText: '4분할' });
+  const mainTrack = win.locator('.track').filter({ has: win.locator('.clip') }).last();
+  // 두 번째 클립 위 (8초 지점)
+  await tile.dragTo(mainTrack, { targetPosition: { x: 8 * 60, y: 20 } });
+  await win.waitForTimeout(300);
+  console.log('after effect drop at 8s', await state());
+  await win.click('[data-tab="transitions"]');
+  await win.locator('#libTransitions .fx-tile', { hasText: '원형 열기' }).dragTo(mainTrack, { targetPosition: { x: 10 * 60, y: 20 } });
+  await win.waitForTimeout(200);
+  await win.locator('#libTransitions .fx-tile', { hasText: '시계 방향' }).dragTo(mainTrack, { targetPosition: { x: 3 * 60, y: 20 } });
+  await win.waitForTimeout(300);
+  await win.evaluate(() => window.__studio.setPlaying(false));
+  console.log('after trans drops at 10s and 3s', await state());
+  console.log('seg', await win.evaluate(() => { const e = document.querySelector('.clip.adjust'); const cs = getComputedStyle(e); return e.className + ' | ' + [...document.styleSheets[0].cssRules].filter(r => r.selectorText && e.matches(r.selectorText)).map(r => r.selectorText + '{' + r.style.cssText.slice(0,120)).join(' ;; '); }));
+  await win.screenshot({ path: path.join(__dirname, 'ui19.png') });
+  console.log('errors', errors);
+  app.process().kill('SIGKILL'); process.exit(0);
+})().catch(e => { console.error(e); process.exit(1); });

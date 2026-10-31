@@ -72,25 +72,6 @@ function buildExportArgs(project, opts) {
       if (fadeIn > 0) fadeF.push(`fade=t=in:st=0:d=${f3(fadeIn)}:alpha=1`);
       if (fadeOut > 0) fadeF.push(`fade=t=out:st=${f3(dur - fadeOut)}:d=${f3(fadeOut)}:alpha=1`);
 
-      if (c.type === 'adjust') {
-        if (track.hidden) continue;
-        const ch = [...colorFilters(c.filter)];
-        if (hasColor(c.color)) { ch.push(curvesFilter(c.color)); if (num(c.color.vibrance)) ch.push(`vibrance=intensity=${(num(c.color.vibrance) / 100).toFixed(3)}`); }
-        if (c.color && c.color.lut && c.color.lut.path) ch.push(`lut3d=file='${c.color.lut.path.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, '')}'`);
-        if (hasEffect(c, 'invert')) ch.push('negate');
-        if (hasEffect(c, 'grain')) ch.push(`noise=alls=${Math.round(8 + 40 * effectAmount(c, 'grain'))}:allf=t+u`);
-        if (hasEffect(c, 'vignette')) ch.push(`vignette=a=${(0.25 + 0.6 * effectAmount(c, 'vignette')).toFixed(3)}`);
-        if (hasEffect(c, 'pixelate')) { const kf = 4 + effectAmount(c, 'pixelate') * 40; ch.push(`scale=${even(W / kf)}:${even(H / kf)}`, `scale=${W}:${H}:flags=neighbor`); }
-        if (hasEffect(c, 'rgbSplit')) ch.push('format=rgba', `rgbashift=rh=-${Math.max(1, Math.round((2 + 18 * effectAmount(c, 'rgbSplit')) * W / 1920))}:bh=${Math.max(1, Math.round((2 + 18 * effectAmount(c, 'rgbSplit')) * W / 1920))}`);
-        if (!ch.length) continue;
-        const a = `aj${ov}a`, b = `aj${ov}b`, cc = `aj${ov}c`;
-        filters.push(`[${last}]split[${a}][${b}]`);
-        filters.push(`[${b}]${ch.join(',')},format=rgba,trim=start=${f3(start)}:end=${f3(start + dur)}${fadeIn > 0 ? `,fade=t=in:st=${f3(start)}:d=${f3(fadeIn)}:alpha=1` : ''}${fadeOut > 0 ? `,fade=t=out:st=${f3(start + dur - fadeOut)}:d=${f3(fadeOut)}:alpha=1` : ''}[${cc}]`);
-        filters.push(`[${a}][${cc}]overlay=eof_action=pass:enable='between(t,${f3(start)},${f3(start + dur)})'[o${ov}]`);
-        last = `o${ov++}`;
-        continue;
-      }
-
       if (c.type === 'text') {
         const ti = opts.textImages && opts.textImages[c.id];
         if (!ti || track.hidden) continue;
@@ -124,19 +105,30 @@ function buildExportArgs(project, opts) {
         continue;
       }
 
-      const m = mediaById[c.mediaId];
+      // 조정 레이어·효과 구간: 그 아래까지 합성된 화면을 잘라 와서 같은 처리 과정을 거친다
+      const isAdj = c.type === 'adjust';
+      if (isAdj && track.hidden) continue;
+      const m = isAdj ? { kind: 'adjust', width: W, height: H } : mediaById[c.mediaId];
       if (!m) continue;
       const c0 = c;
-      c = effClip(c0, tp);
-      const speed = num(c.speed, 1);
+      c = effClip(isAdj ? { ...c0, transform: { scale: 1, x: 0, y: 0, rotation: 0 } } : c0, tp);
+      const speed = isAdj ? 1 : num(c.speed, 1);
       const srcLen = num(c.out) - num(c.in);
       const vdur = dur + extend;
-      if (m.kind === 'image') inputs.push('-loop', '1', '-framerate', String(FPS), '-t', f3(vdur), '-i', m.path);
-      else {
-        const avail = m.duration ? Math.max(srcLen, num(m.duration) - num(c.in)) : srcLen;
-        inputs.push('-ss', f3(c.in), '-t', f3(Math.min(avail, srcLen + extend * speed)), '-i', m.path);
+      let k, adjIn = null;
+      if (isAdj) {
+        k = `adj${ov}`;
+        filters.push(`[${last}]split[${k}base][${k}src]`);
+        last = `${k}base`;
+        adjIn = `${k}src`;
+      } else {
+        if (m.kind === 'image') inputs.push('-loop', '1', '-framerate', String(FPS), '-t', f3(vdur), '-i', m.path);
+        else {
+          const avail = m.duration ? Math.max(srcLen, num(m.duration) - num(c.in)) : srcLen;
+          inputs.push('-ss', f3(c.in), '-t', f3(Math.min(avail, srcLen + extend * speed)), '-i', m.path);
+        }
+        k = idx++;
       }
-      const k = idx++;
 
       if (!track.hidden && m.kind !== 'audio') {
         const tr = c.transform || {};
@@ -149,7 +141,7 @@ function buildExportArgs(project, opts) {
         const fit = Math.min(W / mw, H / mh) * scale;
         const w = even(mw * fit), h = even(mh * fit);
         const chain = [];
-        let inLbl = `${k}:v`, bn = 0;
+        let inLbl = adjIn || `${k}:v`, bn = 0;
         const branch = fn => {
           const a = `br${k}_${bn++}`, o = `br${k}_${bn++}`;
           filters.push(`[${inLbl}]${chain.length ? chain.join(',') : 'null'}[${a}]`);
@@ -157,14 +149,14 @@ function buildExportArgs(project, opts) {
           filters.push(...fn(a, o, `br${k}_${bn++}`, `br${k}_${bn++}`, `br${k}_${bn++}`, `br${k}_${bn++}`));
           inLbl = o;
         };
-        const pre = m.kind !== 'image' ? [...(c.reverse ? ['reverse'] : []), `setpts=(PTS-STARTPTS)/${speed.toFixed(4)}`] : [];
+        const pre = isAdj ? [`trim=start=${f3(start)}:end=${f3(start + dur)}`, 'setpts=PTS-STARTPTS'] : m.kind !== 'image' ? [...(c.reverse ? ['reverse'] : []), `setpts=(PTS-STARTPTS)/${speed.toFixed(4)}`] : [];
         const cropF = cropped ? [`crop=trunc(iw*${cw.toFixed(4)}/2)*2:trunc(ih*${chh.toFixed(4)}/2)*2:trunc(iw*${cl.toFixed(4)}):trunc(ih*${ct.toFixed(4)})`] : [];
         // 배경 채우기 (흐림 / 색)
         const bg = c.bg && c.bg.type && c.bg.type !== 'none' ? c.bg : null;
         if (bg) {
           const bgEnd = `,${fadeF.length ? fadeF.join(',') + ',' : ''}${extend > 0 ? `tpad=stop_mode=clone:stop_duration=${f3(extend)},` : ''}setpts=PTS-STARTPTS+${f3(start)}/TB`;
           if (bg.type === 'blur') {
-            filters.push(`[${k}:v]split[bgs${k}][bgm${k}]`);
+            filters.push(`[${inLbl}]split[bgs${k}][bgm${k}]`);
             inLbl = `bgm${k}`;
             const sig = ((10 + 40 * num(bg.amount, 50) / 100) * W / 1920).toFixed(2);
             filters.push(`[bgs${k}]${[...pre, `fps=${FPS}`, ...cropF, `scale=${W}:${H}:force_original_aspect_ratio=increase`, `crop=${W}:${H}`, `gblur=sigma=${sig}`, 'eq=brightness=-0.04', 'format=rgba'].join(',')}${bgEnd}[bgv${k}]`);
@@ -284,7 +276,7 @@ function buildExportArgs(project, opts) {
         filters.push(`[${last}][v${k}]overlay=x='${x}':y='${y}':eof_action=pass:enable='between(t,${f3(start)},${f3(start + vdur)})'[o${ov}]`);
         last = `o${ov++}`;
       }
-      if (m.hasAudio && !track.muted && num(c.volume, 1) > 0 && m.kind !== 'image') {
+      if (!isAdj && m.hasAudio && !track.muted && num(c.volume, 1) > 0 && m.kind !== 'image') {
         audioLabels.push(audioChain(filters, k, c, speed, dur, start));
       }
     }
