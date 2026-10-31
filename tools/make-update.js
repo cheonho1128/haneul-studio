@@ -13,6 +13,15 @@ const files = {};
   }
 })(src);
 const out = { version: pkg.version, minShell: process.argv[2] || '0.2.0', createdAt: new Date().toISOString(), files };
-fs.mkdirSync(path.join(root, 'dist-update'), { recursive: true });
-fs.writeFileSync(path.join(root, 'dist-update', 'update.json'), JSON.stringify(out));
-console.log('update.json', pkg.version, Object.keys(files).length, 'files');
+// 저장소의 updates/ 폴더에 올리면 앱이 자동으로 찾아간다
+const dir = path.join(root, 'updates');
+fs.mkdirSync(dir, { recursive: true });
+const name = `update-${pkg.version}.json`;
+fs.writeFileSync(path.join(dir, name), JSON.stringify(out));
+const notesFile = path.join(root, 'CHANGELOG-latest.txt');
+const notes = fs.existsSync(notesFile) ? fs.readFileSync(notesFile, 'utf8').trim() : '';
+fs.writeFileSync(path.join(dir, 'latest.json'), JSON.stringify({ version: pkg.version, minShell: out.minShell, bundle: name, notes, date: out.createdAt }, null, 2));
+// 오래된 묶음은 지운다 (최근 3개만 보관)
+const old = fs.readdirSync(dir).filter(f => /^update-.*\.json$/.test(f)).sort((a, b) => fs.statSync(path.join(dir, b)).mtimeMs - fs.statSync(path.join(dir, a)).mtimeMs).slice(3);
+old.forEach(f => fs.unlinkSync(path.join(dir, f)));
+console.log(name, Object.keys(files).length, 'files');

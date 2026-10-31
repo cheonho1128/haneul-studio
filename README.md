@@ -43,3 +43,10 @@ npm start          # 실행
 npm test           # 내보내기 엔진 테스트
 npm run dist:win   # 윈도우 zip 빌드 (리눅스에서 빌드 시 npm_config_platform=win32 로 ffmpeg 재설치)
 ```
+
+## 앱 안 업데이트 (개발자용)
+앱은 `https://raw.githubusercontent.com/cheonho1128/haneul-studio/main/updates/latest.json`을 확인합니다.
+1. `package.json`의 version을 올리고, `CHANGELOG-latest.txt`에 바뀐 점을 적습니다.
+2. `npm run bundle` → `updates/update-<버전>.json`, `updates/latest.json` 생성
+3. 커밋 후 main에 push 하면 앱의 "업데이트" 버튼에 나타납니다.
+Electron이나 FFmpeg를 바꿔야 할 때만 `node tools/make-update.js <새 shell 버전>`으로 minShell을 올리고 전체 zip을 새로 배포합니다.

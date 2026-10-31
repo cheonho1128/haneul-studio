@@ -14,19 +14,20 @@ async function getJson(url) {
   return r.json();
 }
 
+const RAW = `https://raw.githubusercontent.com/${REPO}/main/updates/`;
+
 async function check() {
-  const rel = await getJson(process.env.HANEUL_UPDATE_API || `https://api.github.com/repos/${REPO}/releases/latest`);
+  // 저장소의 updates/latest.json 에 최신 버전 정보가 있다
+  const rel = await getJson(process.env.HANEUL_UPDATE_API || RAW + 'latest.json?t=' + Date.now());
   const current = H().version;
   if (!rel) return { current, latest: null, available: false };
-  const latest = String(rel.tag_name || '').replace(/^v/, '');
-  const bundle = (rel.assets || []).find(a => a.name === 'update.json');
-  const full = (rel.assets || []).find(a => /win.*\.zip$/i.test(a.name));
+  const latest = String(rel.version || '').replace(/^v/, '');
   const available = !!latest && H().compareVersions(latest, current) > 0;
   return {
     current, latest, available,
-    notes: rel.body || '', page: rel.html_url,
-    bundleUrl: bundle ? bundle.browser_download_url : null,
-    fullUrl: full ? full.browser_download_url : null,
+    notes: rel.notes || '', page: rel.page || `https://github.com/${REPO}`,
+    bundleUrl: rel.bundle ? (/^https?:/.test(rel.bundle) ? rel.bundle : RAW + rel.bundle) : null,
+    fullUrl: rel.fullUrl || null,
   };
 }
 
